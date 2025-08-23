@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import fs from "node:fs";
 import { SSTWriter } from "../libs/storage";
 import Manifest from "../libs/storage/manifest";
 import Engine from "../libs/storage/engine";
@@ -22,7 +23,7 @@ describe("compactor smallest-first fallback", () => {
       minKeyHex: metaL.minKey.toString("hex"),
       maxKeyHex: metaL.maxKey.toString("hex"),
       size: metaL.size,
-      level: 0,
+      level: 1,
       walOffset: 0,
     });
 
@@ -39,7 +40,7 @@ describe("compactor smallest-first fallback", () => {
         minKeyHex: meta.minKey.toString("hex"),
         maxKeyHex: meta.maxKey.toString("hex"),
         size: meta.size,
-        level: 0,
+        level: 1,
         walOffset: 0,
       });
       smallFiles.push(meta.file);
@@ -51,7 +52,7 @@ describe("compactor smallest-first fallback", () => {
       .slice(0, 4)
       .reduce((s, mm) => s + (mm.size || 0), 0);
     const levelSize = m
-      .listFilesByLevel(0)
+      .listFilesByLevel(1)
       .reduce((s, f) => s + (f.size || 0), 0);
     const perLevel = [0, levelSize - targetReduction];
 
@@ -70,13 +71,34 @@ describe("compactor smallest-first fallback", () => {
     });
 
     const persisted = Manifest.load(dir);
-    // Expect that at least some of the small files were removed (chosen) and the large remains
-    const largeStill = persisted.listFiles().some((f) => f.file === metaL.file);
-    const someSmallRemoved = smallFiles.some(
-      (sf) => !persisted.listFiles().some((f) => f.file === sf)
+    const persistedFiles = persisted.listFiles().map((f) => f.file);
+    try {
+      const dirFiles = fs.readdirSync(dir);
+      console.error("[debug] dir listing:", dirFiles);
+    } catch (e) {
+      console.error(
+        "[debug] readdir failed",
+        e && typeof e === "object" && "message" in e ? e.message : e
+      );
+    }
+    console.error("[debug] persisted files:", persistedFiles);
+
+    // Deterministic expectation: prefer removing the smallest files first.
+    // Compute which files were removed from the manifest and assert one of:
+    //  - the first 4 small files were removed (preferred), or
+    //  - the large file was removed (acceptable fallback).
+    const initialFiles = [metaL.file, ...smallFiles];
+    const removed = initialFiles.filter((p) => !persistedFiles.includes(p));
+
+    const expectedRemoved = smallFiles.slice(0, 4);
+    const removedIncludesAllExpected = expectedRemoved.every((rf) =>
+      removed.includes(rf)
     );
-    // Accept either: some small files were removed (preferred) OR the large file
-    // was removed to meet reduction (also allowed). Ensure compaction made progress.
-    expect(someSmallRemoved || !largeStill).toBe(true);
+    const largeRemoved = removed.includes(metaL.file);
+
+    // Pass if either deterministic smallest-first happened, or large file was removed
+    // to meet the reduction target. This makes the test strict but tolerant of the
+    // practical compaction outcome.
+    expect(removedIncludesAllExpected || largeRemoved).toBe(true);
   });
 });
