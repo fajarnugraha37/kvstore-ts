@@ -8,8 +8,8 @@ export interface WalLike {
   // optional richer scans
   scanWithOffsets(minOffset?: number): AsyncGenerator<{ value: any; start: number; end: number }, void, unknown>;
   scanBuffered(minOffset?: number): AsyncGenerator<any, void, unknown>;
-  reverseScanBuffered(): AsyncGenerator<any, void, unknown>;
   reverseScan(): AsyncGenerator<any, void, unknown>;
+  reverseScanBuffered(): AsyncGenerator<any, void, unknown>;
   // metrics bag
   metrics: any;
   // optional helper returning current durable end offset

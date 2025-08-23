@@ -13,7 +13,7 @@ import {
   fileDescriptor,
   writevNative,
 } from "../utils";
-import { WallSched } from "./sched";
+import { WallSchedHelper } from "./wall_sched_helper";
 
 // New compact header layout to support versioning and entry types:
 // 0: version (1 byte)
@@ -72,7 +72,7 @@ export interface WalOptions {
  * await wal.append({ key: 'k', value: 'v' }); // durable on resolve
  * await wal.close();
  */
-export class Wal extends WallSched implements WalLike {
+export class Wal implements WalLike {
   private fd: number | null = null;
   private rootDir: string = "./data";
   // Small pool for header buffers to avoid allocating 8 bytes every append.
@@ -105,6 +105,9 @@ export class Wal extends WallSched implements WalLike {
 
   private version = 1;
   private backgroundFlush = true;
+  // scheduling helpers
+  private maxBatchDelayMs: number = 50;
+  private _sched!: WallSchedHelper;
   // track current write offset (file length at end of last append/flush)
   private currentOffset: number = 0;
   // global base offset for the active WAL file (monotonic across rotations)
@@ -113,7 +116,6 @@ export class Wal extends WallSched implements WalLike {
   private globalNext: number = 0;
   // meta persistence tuning: write meta every N appends to reduce fs churn
   private metaFlushInterval = 64;
-  private appendSinceMeta = 0;
   // persisted index of rotated segments: { filename -> { base, end } }
   private segmentsIndex: Record<string, { base: number; end: number }> = {};
   // Promise chain to serialize write operations and avoid races on fd/currentOffset
@@ -139,7 +141,7 @@ export class Wal extends WallSched implements WalLike {
   }
 
   constructor(private file = "log.wal", opts: WalOptions = {}) {
-    super();
+    // no inheritance
     if (opts.rootDir) this.rootDir = opts.rootDir;
     if (opts.maxBatchSize != null) this.maxBatchSize = opts.maxBatchSize;
     if (opts.maxBatchDelayMs != null)
@@ -148,6 +150,14 @@ export class Wal extends WallSched implements WalLike {
     if (opts.version != null) this.version = opts.version;
     if (opts.backgroundFlush != null)
       this.backgroundFlush = opts.backgroundFlush;
+    // initialize scheduler helper now that options are applied
+    this._sched = new WallSchedHelper({
+      maxBatchDelayMs: this.maxBatchDelayMs,
+      metaFlushInterval: this.metaFlushInterval,
+      onFlushBatch: async () => this.flushBatch(),
+      onFlush: async () => this.flush(),
+      onMetaFlush: async () => this.writeMetaSync(),
+    });
   }
 
   /**
@@ -301,7 +311,7 @@ export class Wal extends WallSched implements WalLike {
       }
     } catch {}
     // start a background flush to ensure batches are periodically flushed
-    if (this.backgroundFlush) this.startBackgroundFlush();
+    if (this.backgroundFlush) this._sched.startBackgroundFlush();
   }
 
   private writeMetaSync() {
@@ -474,7 +484,7 @@ export class Wal extends WallSched implements WalLike {
         );
         this.batchCount++;
         // schedule a delayed flush if not set
-        this.scheduleFlush();
+        this._sched.scheduleFlush();
         if (this.batchCount >= this.maxBatchSize) {
           await this.flushBatch();
         }
@@ -493,13 +503,9 @@ export class Wal extends WallSched implements WalLike {
           this.metrics.flushCount++;
           // update current offset
           this.currentOffset += HEADER_SIZE * 2 + payloadBuffer.length;
-          // update global next and persist meta periodically to reduce fs churn
+          // update global next and persist meta via scheduler helper
           this.globalNext = this.globalBase + this.currentOffset;
-          this.appendSinceMeta++;
-          if (this.appendSinceMeta >= this.metaFlushInterval) {
-            this.appendSinceMeta = 0;
-            this.writeMetaSync();
-          }
+          await this._sched.noteAppend(HEADER_SIZE * 2 + payloadBuffer.length);
         });
       }
 
@@ -538,10 +544,7 @@ export class Wal extends WallSched implements WalLike {
     // await this.writeLock.acquire();
     try {
       // cancel timer if set
-      if (this.flushTimer != null) {
-        clearTimeout(this.flushTimer);
-        this.flushTimer = null;
-      }
+      this._sched.clearFlushTimer();
       await this.flushBatch();
     } finally {
       // this.writeLock.release();
@@ -553,7 +556,7 @@ export class Wal extends WallSched implements WalLike {
    */
   async close() {
     await this.flush();
-    this.stopBackgroundFlush();
+    this._sched.stopBackgroundFlush();
     if (this.fd != null) {
       await fasync.close(this.fd);
       this.fd = null;
@@ -888,7 +891,8 @@ export class Wal extends WallSched implements WalLike {
           acc2 = Math.max(
             acc2,
             fileBases[fname] +
-              (this.segmentsIndex[fname].end - this.segmentsIndex[fname].base || 0)
+              (this.segmentsIndex[fname].end - this.segmentsIndex[fname].base ||
+                0)
           );
           continue;
         }
@@ -917,8 +921,14 @@ export class Wal extends WallSched implements WalLike {
         const cks = header.readUInt32BE(HEADER_CKS_OFFSET);
         const total = len + HEADER_SIZE;
         if (cursor + HEADER_SIZE + total > buf.length) break;
-        const data = buf.subarray(cursor + HEADER_SIZE, cursor + HEADER_SIZE + len);
-        const trailer = buf.subarray(cursor + HEADER_SIZE + len, cursor + HEADER_SIZE + len + HEADER_SIZE);
+        const data = buf.subarray(
+          cursor + HEADER_SIZE,
+          cursor + HEADER_SIZE + len
+        );
+        const trailer = buf.subarray(
+          cursor + HEADER_SIZE + len,
+          cursor + HEADER_SIZE + len + HEADER_SIZE
+        );
         const tlen = trailer.readUInt32BE(HEADER_LEN_OFFSET);
         const tcks = trailer.readUInt32BE(HEADER_CKS_OFFSET);
         if (tlen !== len || tcks !== cks) break;

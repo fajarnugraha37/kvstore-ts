@@ -7,6 +7,7 @@ import {
 } from "@msgpack/msgpack";
 import { adler32 } from "../utils";
 import type { WalLike } from "./types";
+import { WallSchedHelper } from "./wall_sched_helper";
 import { open } from "node:fs/promises";
 
 const HEADER_SIZE = 12;
@@ -96,11 +97,13 @@ export class HandoffWal implements WalLike {
   private globalNext: number = 0;
   private segmentsIndex: Record<string, { base: number; end: number }> = {};
   private metaFlushInterval = 64;
-  private appendSinceMeta = 0;
 
   // scratch buffer reused for reads
   private _scratch: Buffer | null = null;
   private _scratchSize = 0;
+
+  // optional scheduler helper (composed)
+  private _sched: any;
 
   private getScratch(minSize: number) {
     if (!this._scratch || this._scratchSize < minSize) {
@@ -145,6 +148,14 @@ export class HandoffWal implements WalLike {
       // If backgroundFlush is false, writer loop will be started lazily on first append
       this.backgroundFlush = opts.backgroundFlush;
     }
+    // compose a scheduler helper for optional flush scheduling and meta flush
+    this._sched = new WallSchedHelper({
+      maxBatchDelayMs: this.metaFlushInterval,
+      metaFlushInterval: this.metaFlushInterval,
+      onFlushBatch: async () => {},
+      onFlush: async () => this.flush(),
+      onMetaFlush: async () => this.writeMetaSync(),
+    });
   }
 
   async open() {
@@ -545,7 +556,8 @@ export class HandoffWal implements WalLike {
           acc2 = Math.max(
             acc2,
             fileBases[fname] +
-              (this.segmentsIndex[fname].end - this.segmentsIndex[fname].base || 0)
+              (this.segmentsIndex[fname].end - this.segmentsIndex[fname].base ||
+                0)
           );
           continue;
         }
@@ -574,8 +586,14 @@ export class HandoffWal implements WalLike {
         const cks = header.readUInt32BE(HEADER_CKS_OFFSET);
         const total = len + HEADER_SIZE;
         if (cursor + HEADER_SIZE + total > buf.length) break;
-        const data = buf.subarray(cursor + HEADER_SIZE, cursor + HEADER_SIZE + len);
-        const trailer = buf.subarray(cursor + HEADER_SIZE + len, cursor + HEADER_SIZE + len + HEADER_SIZE);
+        const data = buf.subarray(
+          cursor + HEADER_SIZE,
+          cursor + HEADER_SIZE + len
+        );
+        const trailer = buf.subarray(
+          cursor + HEADER_SIZE + len,
+          cursor + HEADER_SIZE + len + HEADER_SIZE
+        );
         const tlen = trailer.readUInt32BE(HEADER_LEN_OFFSET);
         const tcks = trailer.readUInt32BE(HEADER_CKS_OFFSET);
         if (tlen !== len || tcks !== cks) break;
@@ -805,11 +823,9 @@ export class HandoffWal implements WalLike {
           // update offsets similar to Wal
           this.currentOffset += bytes;
           this.globalNext = this.globalBase + this.currentOffset;
-          this.appendSinceMeta++;
-          if (this.appendSinceMeta >= this.metaFlushInterval) {
-            this.appendSinceMeta = 0;
-            this.writeMetaSync();
-          }
+          try {
+            await this._sched.noteAppend(bytes);
+          } catch {}
         } catch (e) {
           console.error("handoff-wal write error", e);
           // On error, attempt to re-enqueue remaining data (best-effort) and break when fatal

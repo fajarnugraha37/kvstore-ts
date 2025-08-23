@@ -10,5 +10,12 @@ module.exports = function makeTempDir(prefix = "kvstore-test") {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (e) {}
   fs.mkdirSync(dir, { recursive: true });
+  // Optional tracing to help diagnose test isolation issues when running multiple WAL implementations
+  if (process.env.TRACE_TMPDIR) {
+    try {
+      // Print to stdout so bun test captures the trace adjacent to test logs
+      console.log(`[tmpdir] makeTempDir prefix=${prefix} suffix=${suffix} path=${dir}`);
+    } catch (e) {}
+  }
   return dir;
 };
