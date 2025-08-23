@@ -38,3 +38,4 @@ libs/**/*.bak
 data/
 data-*/
 tmp/
+README.*.md
