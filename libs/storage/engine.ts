@@ -118,7 +118,7 @@ export class Engine {
         : undefined;
     this.manifest = Manifest.load(dir, manifestStrict);
     this.walFile = walFile;
-    const impl = this.opts?.walImpl || "wal";
+    const impl = this.opts?.walImpl || "handoff";
     // prepare WAL options based on engine-level settings
     const walOpts: any = {};
     // allow explicit walBatchOptions or shorthand walBatching boolean
