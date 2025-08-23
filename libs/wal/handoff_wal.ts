@@ -26,6 +26,40 @@ export type HandoffWalOptions = {
   batchIntervalMs?: number; // flush interval
 };
 
+/**
+ * HandoffWal is an asynchronous, handoff-style WAL optimized for high-throughput
+ * append workloads.
+ *
+ * Behavior and characteristics:
+ * - Producers enqueue encoded entries into a bounded in-memory queue. A dedicated
+ *   writer loop drains the queue, batches entries and performs writev + fdatasync
+ *   in the background.
+ * - Provides backpressure via queue size and in-flight bytes limits so producers
+ *   can be back-pressured when the writer lags.
+ * - Uses a reusable scratch buffer for reads similar to `Wal`.
+ * - Append returns once the entry is queued (or after backpressure wait), not after
+ *   durability; callers must call `flush()` if they require durability before
+ *   proceeding.
+ *
+ * Tradeoffs:
+ * - Higher append throughput and batching efficiency at the cost of weaker
+ *   synchronous durability semantics (append is not durable until drained and
+ *   fdatasync completes).
+ * - Slightly more complex internal coordination (writer loop, backpressure waiters).
+ *
+ * Use-case: prefer `HandoffWal` for high-throughput workloads where batching and
+ * background durability are acceptable and lower append latency is desired.
+ *
+ * Note on composition vs inheritance:
+ * - `HandoffWal` intentionally does not extend a scheduler-type base (e.g. `WallSched`)
+ *   because its internal producer/consumer writer loop, enqueue/backpressure
+ *   semantics and batching behavior differ from a simple scheduled writer.
+ * - If you want to share scheduling or rotation logic between multiple WAL
+ *   implementations, prefer extracting that logic into a small, testable helper
+ *   (for example a `WallSched` utility) and composing it into `HandoffWal` rather
+ *   than using classical inheritance. This keeps the handoff queue semantics
+ *   explicit and avoids coupling writer-loop internals.
+ */
 export class HandoffWal implements WalLike {
   private fd: number | null = null;
   private rootDir = "./data";
@@ -470,6 +504,102 @@ export class HandoffWal implements WalLike {
     }
   }
 
+  /**
+   * Buffered scan: load each WAL file into memory and parse entries from a large buffer.
+   */
+  async *scanBuffered(minOffset?: number) {
+    const files = fs.readdirSync(this.rootDir || ".");
+    const prefix = this.file + ".seg.";
+    const walFiles = files
+      .filter((f: string) => f === this.file || f.startsWith(prefix))
+      .sort((a: string, b: string) => {
+        const tsA =
+          a === this.file
+            ? Number.MAX_SAFE_INTEGER
+            : Number(a.split(".")[a.split(".").length - 2]) || 0;
+        const tsB =
+          b === this.file
+            ? Number.MAX_SAFE_INTEGER
+            : Number(b.split(".")[b.split(".").length - 2]) || 0;
+        return tsA - tsB;
+      });
+
+    const fileBases: Record<string, number> = {};
+    let acc2 = 0;
+    for (const fname of walFiles) {
+      try {
+        if (fname === this.file) {
+          fileBases[fname] = this.globalBase || acc2;
+          try {
+            const st = fs.statSync(dir(this.rootDir, fname));
+            acc2 = (fileBases[fname] ?? 0) + st.size;
+          } catch {}
+          continue;
+        }
+        if (
+          this.segmentsIndex &&
+          this.segmentsIndex[fname] &&
+          typeof this.segmentsIndex[fname].base === "number"
+        ) {
+          fileBases[fname] = this.segmentsIndex[fname].base;
+          acc2 = Math.max(
+            acc2,
+            fileBases[fname] +
+              (this.segmentsIndex[fname].end - this.segmentsIndex[fname].base || 0)
+          );
+          continue;
+        }
+        const st = fs.statSync(dir(this.rootDir, fname));
+        fileBases[fname] = acc2;
+        acc2 += st.size;
+      } catch {
+        fileBases[fname] = acc2;
+      }
+    }
+
+    for (const fname of walFiles) {
+      const path = dir(this.rootDir, fname);
+      let buf: Buffer;
+      try {
+        buf = fs.readFileSync(path);
+      } catch {
+        continue;
+      }
+      if (buf.length === 0) continue;
+      const fileBase = fileBases[fname] ?? 0;
+      let cursor = 0;
+      while (cursor + HEADER_SIZE * 2 <= buf.length) {
+        const header = buf.subarray(cursor, cursor + HEADER_SIZE);
+        const len = header.readUInt32BE(HEADER_LEN_OFFSET);
+        const cks = header.readUInt32BE(HEADER_CKS_OFFSET);
+        const total = len + HEADER_SIZE;
+        if (cursor + HEADER_SIZE + total > buf.length) break;
+        const data = buf.subarray(cursor + HEADER_SIZE, cursor + HEADER_SIZE + len);
+        const trailer = buf.subarray(cursor + HEADER_SIZE + len, cursor + HEADER_SIZE + len + HEADER_SIZE);
+        const tlen = trailer.readUInt32BE(HEADER_LEN_OFFSET);
+        const tcks = trailer.readUInt32BE(HEADER_CKS_OFFSET);
+        if (tlen !== len || tcks !== cks) break;
+        if (adler32(data) !== cks) break;
+        const start = cursor;
+        const end = cursor + HEADER_SIZE + len + HEADER_SIZE;
+        cursor = end;
+        let value: any;
+        try {
+          value = msgpackDecode(data);
+        } catch (e) {
+          try {
+            value = JSON.parse(data.toString("utf8"));
+          } catch (ee) {
+            value = data.toString("utf8");
+          }
+        }
+        const globalEnd = fileBase + end;
+        if (typeof minOffset === "number" && globalEnd <= minOffset) continue;
+        yield value;
+      }
+    }
+  }
+
   async *reverseScan() {
     const files = fs.readdirSync(this.rootDir || ".");
     const prefix = this.file + ".seg.";
@@ -531,6 +661,72 @@ export class HandoffWal implements WalLike {
         }
       } finally {
         await fh.close();
+      }
+    }
+  }
+
+  /**
+   * Buffered reverse scan: load files into memory and parse entries from the buffer backwards.
+   */
+  async *reverseScanBuffered() {
+    const files = fs.readdirSync(this.rootDir || ".");
+    const prefix = this.file + ".seg.";
+    const walFiles = files
+      .filter((f: string) => f === this.file || f.startsWith(prefix))
+      .sort((a: string, b: string) => {
+        const tsKey = (fn: string) => {
+          if (fn === this.file) return Number.MIN_SAFE_INTEGER;
+          const parts = fn.split(".");
+          if (parts.length >= 3) {
+            const tsPart = parts[parts.length - 2];
+            const ts = Number(tsPart);
+            if (!isNaN(ts)) return ts;
+          }
+          const offPart = parts[parts.length - 1];
+          const off = Number(offPart);
+          return isNaN(off) ? 0 : off;
+        };
+        return tsKey(b) - tsKey(a);
+      });
+
+    for (const fname of walFiles) {
+      const path = dir(this.rootDir, fname);
+      let buf: Buffer;
+      try {
+        buf = fs.readFileSync(path);
+      } catch {
+        continue;
+      }
+      const stSize = buf.length;
+      let cursor = stSize;
+      while (cursor >= HEADER_SIZE) {
+        const tpos = cursor - HEADER_SIZE;
+        if (tpos < 0) break;
+        const trailer = buf.subarray(tpos, tpos + HEADER_SIZE);
+        const len = trailer.readUInt32BE(HEADER_LEN_OFFSET);
+        const cks = trailer.readUInt32BE(HEADER_CKS_OFFSET);
+        const payloadPos = tpos - len;
+        if (payloadPos < HEADER_SIZE) break;
+        const headerPos = payloadPos - HEADER_SIZE;
+        if (headerPos < 0) break;
+        const header = buf.subarray(headerPos, headerPos + HEADER_SIZE);
+        const hlen = header.readUInt32BE(HEADER_LEN_OFFSET);
+        const hcks = header.readUInt32BE(HEADER_CKS_OFFSET);
+        if (hlen !== len || hcks !== cks) break;
+        const data = buf.subarray(payloadPos, payloadPos + len);
+        if (adler32(data) !== cks) break;
+        cursor = headerPos;
+        let value: any;
+        try {
+          value = msgpackDecode(data);
+        } catch (e) {
+          try {
+            value = JSON.parse(data.toString("utf8"));
+          } catch (ee) {
+            value = data.toString("utf8");
+          }
+        }
+        yield value;
       }
     }
   }

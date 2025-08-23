@@ -69,6 +69,20 @@ async function runOnce(wal: WalLike, n: number, payloadSize: number) {
   await measureScan(wal, "pooling");
   await measureReverseScan(wal, "pooling");
 
+  // buffered scans
+  if (typeof (wal as any).scanBuffered === "function") {
+    const startB = Date.now();
+    let c1 = 0;
+    for await (const _ of (wal as any).scanBuffered()) c1++;
+    console.log(`pooling buffered scan: ${c1} entries in ${Date.now() - startB} ms -> ${Math.round(c1 / ((Date.now() - startB) / 1000))} e/s`);
+  }
+  if (typeof (wal as any).reverseScanBuffered === "function") {
+    const startRB = Date.now();
+    let c2 = 0;
+    for await (const _ of (wal as any).reverseScanBuffered()) c2++;
+    console.log(`pooling buffered reverseScan: ${c2} entries in ${Date.now() - startRB} ms -> ${Math.round(c2 / ((Date.now() - startRB) / 1000))} e/s`);
+  }
+
   // now disable pooling by monkeypatching getScratch to always allocate
   // and clear header pool to force fresh header allocs
   (wal as any).getScratch = function (min: number) {

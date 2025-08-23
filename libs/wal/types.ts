@@ -7,6 +7,8 @@ export interface WalLike {
   scan(minOffset?: number): AsyncGenerator<any, void, unknown>;
   // optional richer scans
   scanWithOffsets(minOffset?: number): AsyncGenerator<{ value: any; start: number; end: number }, void, unknown>;
+  scanBuffered(minOffset?: number): AsyncGenerator<any, void, unknown>;
+  reverseScanBuffered(): AsyncGenerator<any, void, unknown>;
   reverseScan(): AsyncGenerator<any, void, unknown>;
   // metrics bag
   metrics: any;
