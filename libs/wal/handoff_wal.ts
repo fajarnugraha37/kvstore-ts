@@ -64,6 +64,19 @@ export class HandoffWal implements WalLike {
   private metaFlushInterval = 64;
   private appendSinceMeta = 0;
 
+  // scratch buffer reused for reads
+  private _scratch: Buffer | null = null;
+  private _scratchSize = 0;
+
+  private getScratch(minSize: number) {
+    if (!this._scratch || this._scratchSize < minSize) {
+      const newSize = Math.max(minSize, this._scratchSize * 2 || 1024);
+      this._scratch = Buffer.alloc(newSize);
+      this._scratchSize = newSize;
+    }
+    return this._scratch;
+  }
+
   // metrics split between enqueue and durable
   public metrics = {
     entriesQueued: 0,
@@ -340,7 +353,7 @@ export class HandoffWal implements WalLike {
           const len = header.readUInt32BE(HEADER_LEN_OFFSET);
           const cks = header.readUInt32BE(HEADER_CKS_OFFSET);
           const total = len + HEADER_SIZE;
-          const buf = Buffer.alloc(total);
+          const buf = this.getScratch(total);
           const r2 = await fh.read(buf, 0, total, cursor + HEADER_SIZE);
           if (r2.bytesRead !== total) break;
           const data = buf.subarray(0, len);
@@ -424,7 +437,7 @@ export class HandoffWal implements WalLike {
           const len = header.readUInt32BE(HEADER_LEN_OFFSET);
           const cks = header.readUInt32BE(HEADER_CKS_OFFSET);
           const total = len + HEADER_SIZE;
-          const buf = Buffer.alloc(total);
+          const buf = this.getScratch(total);
           const r2 = await fh.read(buf, 0, total, cursor + HEADER_SIZE);
           if (r2.bytesRead !== total) break;
           const data = buf.subarray(0, len);
@@ -494,7 +507,7 @@ export class HandoffWal implements WalLike {
           const payloadPos = tpos - len;
           if (payloadPos < HEADER_SIZE) break;
           const total = HEADER_SIZE + len;
-          const buf = Buffer.alloc(total);
+          const buf = this.getScratch(total);
           const r2 = await fh.read(buf, 0, total, payloadPos - HEADER_SIZE);
           if (r2.bytesRead !== total) break;
           const header = buf.subarray(0, HEADER_SIZE);
