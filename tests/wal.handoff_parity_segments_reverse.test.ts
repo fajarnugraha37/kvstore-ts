@@ -33,7 +33,9 @@ describe("HandoffWal parity tests - segments + reverseScan", () => {
     for await (const e of w.reverseScan()) out.push(e);
 
     // Expect active entries first in reverse chronological order, then segment entries
-    const keys = out.map((x) => x && x.k).filter((x) => typeof x !== "undefined");
+    const keys = out
+      .map((x) => x && x.k)
+      .filter((x) => typeof x !== "undefined");
     // locate the sequence in keys; allow there to be extra entries (from prior tests) but ensure ordering exists
     const expected = ["a3", "a2", "a1", "s1c", "s1b", "s1a"];
     // check that expected appears as a contiguous subsequence starting at index 0

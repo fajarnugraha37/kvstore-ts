@@ -11,7 +11,8 @@ describe("wal truncate", () => {
       const dir = `./data-${impl}`;
       // cleanup manifest and wal
       try {
-        if (existsSync(`${dir}/manifest.json`)) unlinkSync(`${dir}/manifest.json`);
+        if (existsSync(`${dir}/manifest.json`))
+          unlinkSync(`${dir}/manifest.json`);
       } catch {}
 
       const e = new Engine(dir, "log.wal", { walImpl: impl });

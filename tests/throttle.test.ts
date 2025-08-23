@@ -14,7 +14,13 @@ describe("throttle helper", () => {
         return 42;
       },
     } as any;
-    await maybeConsumePerEntry(tokenBucket, writer, Buffer.from("k"), Buffer.from("v"), 1);
+    await maybeConsumePerEntry(
+      tokenBucket,
+      writer,
+      Buffer.from("k"),
+      Buffer.from("v"),
+      1
+    );
     expect(consumed).toBe(42);
   });
 
@@ -26,7 +32,13 @@ describe("throttle helper", () => {
       },
     } as any;
     const writer = {} as any;
-    await maybeConsumePerEntry(tokenBucket, writer, Buffer.from("kk"), Buffer.from("vvv"), 1);
+    await maybeConsumePerEntry(
+      tokenBucket,
+      writer,
+      Buffer.from("kk"),
+      Buffer.from("vvv"),
+      1
+    );
     // fallback = klen + vlen + 10
     expect(consumed).toBe(2 + 3 + 10);
   });
@@ -37,7 +49,13 @@ describe("throttle helper", () => {
         return 100;
       },
     } as any;
-    await maybeConsumePerEntry(null, writer, Buffer.from("a"), Buffer.from("b"), 1);
+    await maybeConsumePerEntry(
+      null,
+      writer,
+      Buffer.from("a"),
+      Buffer.from("b"),
+      1
+    );
     // no exception thrown
     expect(true).toBe(true);
   });

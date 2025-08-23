@@ -79,7 +79,10 @@ describe("HandoffWal parity tests", () => {
     const end = (w as any).currentEndOffset ? (w as any).currentEndOffset() : 0;
     await w.truncateUpTo(end);
     expect(fs.existsSync(dir + "/log.wal")).toBe(true);
-    expect(fs.existsSync(dir + "/log.wal.segments.json") || fs.existsSync(dir + "/log.wal.segments.json")).toBe(true);
+    expect(
+      fs.existsSync(dir + "/log.wal.segments.json") ||
+        fs.existsSync(dir + "/log.wal.segments.json")
+    ).toBe(true);
     if ((w as any).close) await (w as any).close();
   });
 });

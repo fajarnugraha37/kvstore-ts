@@ -37,15 +37,15 @@ describe("compactor per-level targets", () => {
       });
       await e.open();
       const res = await e.compactNow();
-    // reload manifest and verify level1 files
-    const persisted = Manifest.load(dir);
-    const lvl1 = persisted.listFilesByLevel(1);
-    expect(lvl1.length).toBeGreaterThan(0);
-    const target = Number(perLevel[1] ?? 0);
-    for (const f of lvl1) {
-      const st = statSync(f.file);
-      expect(st.size).toBeLessThanOrEqual(target);
-    }
+      // reload manifest and verify level1 files
+      const persisted = Manifest.load(dir);
+      const lvl1 = persisted.listFilesByLevel(1);
+      expect(lvl1.length).toBeGreaterThan(0);
+      const target = Number(perLevel[1] ?? 0);
+      for (const f of lvl1) {
+        const st = statSync(f.file);
+        expect(st.size).toBeLessThanOrEqual(target);
+      }
       await e.close();
     });
   });

@@ -123,10 +123,14 @@ export class Compactor {
     }
 
     const tokenBucket = throttleBps > 0 ? new TokenBucket(throttleBps) : null;
-  const minActiveRev: number | undefined = (this.opts as any)?.minActiveRev;
-  const maxActiveRev: number | undefined = (this.opts as any)?.maxActiveRev;
-  const tombstoneRetentionMs: number | undefined = (this.opts as any)?.tombstoneRetentionMs;
-  const nowMs = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : Date.now();
+    const minActiveRev: number | undefined = (this.opts as any)?.minActiveRev;
+    const maxActiveRev: number | undefined = (this.opts as any)?.maxActiveRev;
+    const tombstoneRetentionMs: number | undefined = (this.opts as any)
+      ?.tombstoneRetentionMs;
+    const nowMs =
+      typeof this.opts.timeProvider === "function"
+        ? this.opts.timeProvider()
+        : Date.now();
     for (let level = 0; level < maxLevels; level++) {
       // determine per-output SST max size for this compaction target level (nextLevel)
       const maxSstSize =
@@ -178,15 +182,30 @@ export class Compactor {
         // wrap each reader.iterator() to attach the source SST walOffset so compaction
         // can make age/offset-based decisions (e.g., tombstone TTL removal).
         const iterables = readers.map((r, idx) => {
-          const srcWal = (group[idx] && typeof (group[idx] as any).walOffset === 'number') ? (group[idx] as any).walOffset : undefined;
-          const srcCreated = (group[idx] && typeof (group[idx] as any).createdAt === 'number') ? (group[idx] as any).createdAt : undefined;
+          const srcWal =
+            group[idx] && typeof (group[idx] as any).walOffset === "number"
+              ? (group[idx] as any).walOffset
+              : undefined;
+          const srcCreated =
+            group[idx] && typeof (group[idx] as any).createdAt === "number"
+              ? (group[idx] as any).createdAt
+              : undefined;
           if (process.env.KV_COMPACTOR_DEBUG) {
-            try { console.error('[compactor-debug] source meta[%d]=%o', idx, group[idx]); } catch (e) {}
+            try {
+              console.error(
+                "[compactor-debug] source meta[%d]=%o",
+                idx,
+                group[idx]
+              );
+            } catch (e) {}
           }
           return (async function* () {
             for await (const it of r.iterator()) {
               // include source metadata so compaction can make time-based tombstone decisions
-              yield Object.assign({}, it, { walOffsetSrc: srcWal, createdAtSrc: srcCreated });
+              yield Object.assign({}, it, {
+                walOffsetSrc: srcWal,
+                createdAtSrc: srcCreated,
+              });
             }
           })();
         });
@@ -283,11 +302,20 @@ export class Compactor {
             // so we must preserve the tombstone for snapshot correctness.
             skipTombstone = false;
             // write tombstone as-is; preserve source walOffset/createdAt if available else use now
-            const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            const entryCreated =
+              typeof this.opts.timeProvider === "function"
+                ? this.opts.timeProvider()
+                : nowMs;
             // throttle per-entry based on estimated bytes that will be appended
             // per-entry throttling
             await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
-            curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
+            curWriter!.add(
+              key,
+              val,
+              e.rev,
+              (e as any).walOffsetSrc,
+              entryCreated
+            );
             approxSize += entrySize;
             processed += 1;
             if (processed >= entriesPerYield) {
@@ -306,7 +334,16 @@ export class Compactor {
             if (ageMs > tombstoneRetentionMs) {
               // Tombstone expired by TTL. Try to promote next-highest candidate from merged list
               if (process.env.KV_COMPACTOR_DEBUG) {
-                try { console.error('[compactor-debug] tombstone expired key=%s rev=%s srcCreated=%s nowMs=%s retention=%s', key && key.toString ? key.toString() : '<nil>', String(e.rev), String(srcCreated), String(nowMs), String(tombstoneRetentionMs)); } catch (e) {}
+                try {
+                  console.error(
+                    "[compactor-debug] tombstone expired key=%s rev=%s srcCreated=%s nowMs=%s retention=%s",
+                    key && key.toString ? key.toString() : "<nil>",
+                    String(e.rev),
+                    String(srcCreated),
+                    String(nowMs),
+                    String(tombstoneRetentionMs)
+                  );
+                } catch (e) {}
               }
               let promoted = false;
               const cands: any[] | undefined = (e as any).candidates;
@@ -315,18 +352,47 @@ export class Compactor {
                 let bestCand: any | null = null;
                 for (const cand of cands) {
                   if (!cand || cand.value === null) continue;
-                  const cr = typeof cand.rev === 'number' ? cand.rev : 0;
-                  if (!bestCand || (typeof bestCand.rev !== 'number' || cr > bestCand.rev)) bestCand = cand;
+                  const cr = typeof cand.rev === "number" ? cand.rev : 0;
+                  if (
+                    !bestCand ||
+                    typeof bestCand.rev !== "number" ||
+                    cr > bestCand.rev
+                  )
+                    bestCand = cand;
                 }
                 if (bestCand) {
                   if (process.env.KV_COMPACTOR_DEBUG) {
-                    try { console.error('[compactor-debug] promoting best candidate key=%s rev=%s val=%s', key && key.toString ? key.toString() : '<nil>', String(bestCand.rev), bestCand.value && bestCand.value.toString ? bestCand.value.toString() : '<nil>'); } catch (e) {}
+                    try {
+                      console.error(
+                        "[compactor-debug] promoting best candidate key=%s rev=%s val=%s",
+                        key && key.toString ? key.toString() : "<nil>",
+                        String(bestCand.rev),
+                        bestCand.value && bestCand.value.toString
+                          ? bestCand.value.toString()
+                          : "<nil>"
+                      );
+                    } catch (e) {}
                   }
-                  const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+                  const entryCreated =
+                    typeof this.opts.timeProvider === "function"
+                      ? this.opts.timeProvider()
+                      : nowMs;
                   // per-entry token-bucket throttling for promoted candidates
                   // per-entry throttling for promoted candidates
-                  await maybeConsumePerEntry(tokenBucket, curWriter, key, bestCand.value, bestCand.rev);
-                  curWriter!.add(key, bestCand.value, bestCand.rev, (bestCand as any).walOffsetSrc, entryCreated);
+                  await maybeConsumePerEntry(
+                    tokenBucket,
+                    curWriter,
+                    key,
+                    bestCand.value,
+                    bestCand.rev
+                  );
+                  curWriter!.add(
+                    key,
+                    bestCand.value,
+                    bestCand.rev,
+                    (bestCand as any).walOffsetSrc,
+                    entryCreated
+                  );
                   promoted = true;
                 }
               }
@@ -334,10 +400,19 @@ export class Compactor {
             }
           }
           if (!skipTombstone) {
-            const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            const entryCreated =
+              typeof this.opts.timeProvider === "function"
+                ? this.opts.timeProvider()
+                : nowMs;
             // per-entry throttling
             await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
-            curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
+            curWriter!.add(
+              key,
+              val,
+              e.rev,
+              (e as any).walOffsetSrc,
+              entryCreated
+            );
           }
           approxSize += entrySize;
           processed += 1;
@@ -371,78 +446,181 @@ export class Compactor {
         continue;
       }
 
+      // strategy: if perLevelMax is provided, repeatedly pick a small set of files
+      // from this level to compact until the level meets its size target. Otherwise
+      // fall back to the previous one-by-one grouping behavior.
       const processed = new Set<string>();
       const compactedNext = new Set<string>();
 
-      for (const f of filesAtLevel) {
-        if (processed.has(f.file)) continue;
+      const levelTargetDefined =
+        this.opts.perLevelMax && Array.isArray(this.opts.perLevelMax);
+      const levelTarget = levelTargetDefined
+        ? (this.opts.perLevelMax as number[])[level]
+        : undefined;
 
-        const overlapsNext = filesNext.filter(
-          (n) => !compactedNext.has(n.file) && overlaps(f, n)
-        );
+      if (typeof levelTarget === "number" && levelTarget >= 0) {
+        // repeatedly compact until this level's total size <= levelTarget
+        let levelFiles = this.manifest
+          .listFilesByLevel(level)
+          .filter((f) => !created.has(f.file));
 
-        if (overlapsNext.length === 0) {
-          // promote file to next level
-          this.manifest.replaceFiles(
-            [f.file],
-            [
-              {
-                file: f.file,
-                minKeyHex: f.minKeyHex,
-                maxKeyHex: f.maxKeyHex,
-                size: f.size,
-                level: nextLevel,
-                walOffset: f.walOffset,
-              },
-            ]
-          );
-          processed.add(f.file);
-          continue;
-        }
+        const computeLevelSize = (files: any[]) =>
+          files.reduce((s, f) => s + (f.size || 0), 0);
 
-        // group files to compact
-        const group = [f, ...overlapsNext];
-        const readers: SSTReader[] = [];
-        for (const g of group) {
-          try {
-            if (!existsSync(g.file)) continue;
-            readers.push(SSTReader.open(g.file));
-          } catch (e) {}
-        }
+        let levelSize = computeLevelSize(levelFiles);
 
-        if (readers.length === 0) {
-          for (const g of group) processed.add(g.file);
-          continue;
-        }
+        while (levelFiles.length > 0 && levelSize > levelTarget) {
+          // 1) Primary: overlap-weighted selection. Compute how many files in next
+          //    level each candidate overlaps; prefer files with high overlapCount and
+          //    small size (score = overlapCount / size). Select until required reduction
+          //    or maxFilesPerCompaction reached.
+          const requiredReduction = Math.max(1, levelSize - levelTarget);
 
-        const iterables = readers.map((r, idx) => {
-          const srcWal = (group[idx] && typeof (group[idx] as any).walOffset === 'number') ? (group[idx] as any).walOffset : undefined;
-          const srcCreated = (group[idx] && typeof (group[idx] as any).createdAt === 'number') ? (group[idx] as any).createdAt : undefined;
-          return (async function* () {
-            for await (const it of r.iterator()) {
-              yield Object.assign({}, it, { walOffsetSrc: srcWal, createdAtSrc: srcCreated });
-            }
-          })();
-        });
+          const scored = levelFiles.map((f) => {
+            const overlap = filesNext.reduce(
+              (c, n) => (overlaps(f, n) ? c + 1 : c),
+              0
+            );
+            const size = f && typeof f.size === "number" ? f.size : 0;
+            const score = overlap > 0 ? overlap / Math.max(1, size) : 0;
+            return { f, overlap, size, score };
+          });
 
-        // Split merged output into multiple SSTs each <= maxSstSize (computed per-target-level)
-        const metas: any[] = [];
-        let curWriter: SSTWriter | null = null;
-        let curTmp: string | null = null;
-        let curOut: string | null = null;
-        let curMin: Buffer | null = null;
-        let curMax: Buffer | null = null;
+          scored.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+            return a.size - b.size;
+          });
 
-        async function rotateWriter() {
-          if (!curWriter) return;
-          const estimated =
-            typeof (curWriter as any).getEstimatedSize === "function"
-              ? (curWriter as any).getEstimatedSize()
-              : 0;
-          if (tokenBucket && estimated > 0) {
-            await tokenBucket.consume(estimated);
+          let selected: any[] = [];
+          let selSum = 0;
+          for (const s of scored) {
+            if (selected.length >= maxFilesPerCompaction) break;
+            if (s.score <= 0) break; // remaining files have no overlap, stop
+            selected.push(s.f);
+            selSum += s.size || 0;
+            if (selSum >= requiredReduction) break;
           }
-          const m = curWriter.finish();
+
+          // 2) Fallback to range-coalescing (smallest-window by key order) if overlap
+          //    selection didn't meet the reduction target.
+          if (selSum < requiredReduction) {
+            const filesByKey = levelFiles.slice().sort((a, b) => {
+              const aMin =
+                a && a.minKeyHex
+                  ? Buffer.from(a.minKeyHex, "hex")
+                  : Buffer.alloc(0);
+              const bMin =
+                b && b.minKeyHex
+                  ? Buffer.from(b.minKeyHex, "hex")
+                  : Buffer.alloc(0);
+              if (aMin.length === 0 && bMin.length === 0) return 0;
+              if (aMin.length === 0) return -1;
+              if (bMin.length === 0) return 1;
+              return Buffer.compare(aMin, bMin);
+            });
+
+            let bestWindow: any[] | null = null;
+            let bestSum = Infinity;
+            for (let i = 0; i < filesByKey.length; i++) {
+              let sum = 0;
+              for (
+                let j = i;
+                j < filesByKey.length && j < i + maxFilesPerCompaction;
+                j++
+              ) {
+                const f = filesByKey[j];
+                if (!f) continue;
+                sum += f.size || 0;
+                if (sum >= requiredReduction) {
+                  if (sum < bestSum) {
+                    bestSum = sum;
+                    bestWindow = filesByKey.slice(i, j + 1);
+                  }
+                  break;
+                }
+              }
+            }
+
+            if (bestWindow && bestWindow.length > 0) {
+              selected = bestWindow;
+              selSum = bestWindow.reduce((s, x) => s + (x.size || 0), 0);
+            }
+          }
+
+          // 3) Final fallback: smallest-files-first if still insufficient
+          if (selSum < requiredReduction) {
+            const bySize = levelFiles
+              .slice()
+              .sort((a, b) => (a.size || 0) - (b.size || 0));
+            let ssum = selSum;
+            const already = new Set((selected || []).map((x) => x.file));
+            for (const f of bySize) {
+              if (selected.length >= maxFilesPerCompaction) break;
+              if (already.has(f.file)) continue;
+              selected.push(f);
+              ssum += f.size || 0;
+              if (ssum >= requiredReduction) break;
+            }
+            selSum = ssum;
+          }
+
+          if (selected.length === 0) break; // nothing to compact
+
+          // include overlapping files from next level
+          const overlapsNext = filesNext.filter(
+            (n) =>
+              !compactedNext.has(n.file) && selected.some((s) => overlaps(s, n))
+          );
+
+          const group = Array.from(new Set([...selected, ...overlapsNext]));
+
+          const readers: SSTReader[] = [];
+          for (const g of group) {
+            try {
+              if (!existsSync(g.file)) continue;
+              readers.push(SSTReader.open(g.file));
+            } catch (e) {}
+          }
+
+          if (readers.length === 0) {
+            // mark them processed so we won't loop forever
+            for (const g of group) processed.add(g.file);
+            break;
+          }
+
+          const iterables = readers.map((r, idx) => {
+            const srcWal =
+              group[idx] && typeof (group[idx] as any).walOffset === "number"
+                ? (group[idx] as any).walOffset
+                : undefined;
+            const srcCreated =
+              group[idx] && typeof (group[idx] as any).createdAt === "number"
+                ? (group[idx] as any).createdAt
+                : undefined;
+            return (async function* () {
+              for await (const it of r.iterator()) {
+                yield Object.assign({}, it, {
+                  walOffsetSrc: srcWal,
+                  createdAtSrc: srcCreated,
+                });
+              }
+            })();
+          });
+
+          // write merged output (re-using existing rotation logic)
+          const metas: any[] = [];
+          let curWriter: SSTWriter | null = null;
+          async function rotateWriter() {
+            if (!curWriter) return;
+            const estimated =
+              typeof (curWriter as any).getEstimatedSize === "function"
+                ? (curWriter as any).getEstimatedSize()
+                : 0;
+            if (tokenBucket && estimated > 0) {
+              await tokenBucket.consume(estimated);
+            }
+            const m = curWriter.finish();
             metas.push({
               file: m.file,
               minKeyHex: m.minKey.toString("hex"),
@@ -452,112 +630,351 @@ export class Compactor {
               walOffset: 0,
               createdAt: Date.now(),
             });
-          curWriter = null;
-          curTmp = null;
-          curOut = null;
-          curMin = null;
-          curMax = null;
-        }
+            curWriter = null;
+          }
 
-        let approxSize = 0;
-        for await (const e of kWayMerge(iterables)) {
-          const key = e.key;
-          const val = e.value;
-          const entrySize = (key?.length || 0) + (val ? val.length : 0) + 8; // fallback rough
-          let willExceed = false;
-          if (
-            curWriter &&
-            typeof (curWriter as any).simulatedSizeAfterAdd === "function"
-          ) {
-            const sim = (curWriter as any).simulatedSizeAfterAdd(
-              key,
-              val,
-              e.rev
+          for await (const e of kWayMerge(iterables)) {
+            const key = e.key;
+            const val = e.value;
+            const entrySize = (key?.length || 0) + (val ? val.length : 0) + 8;
+            let willExceed = false;
+            if (
+              curWriter &&
+              typeof (curWriter as any).simulatedSizeAfterAdd === "function"
+            ) {
+              const sim = (curWriter as any).simulatedSizeAfterAdd(
+                key,
+                val,
+                e.rev
+              );
+              willExceed = sim > maxSstSize;
+            } else if (curWriter) {
+              willExceed =
+                curWriter.estimateSizeAfterAdd(key, val, e.rev) > maxSstSize;
+            } else {
+              willExceed = entrySize > maxSstSize;
+            }
+            if (!curWriter || willExceed) {
+              await rotateWriter();
+              const outFile = `${
+                this.dir
+              }/compacted_${Date.now()}_${Math.random()
+                .toString(16)
+                .slice(2)}.sst`;
+              const tmp = `${outFile}.tmp`;
+              curWriter = new SSTWriter(tmp, outFile);
+            }
+
+            // tombstone logic and per-entry throttling (reuse existing code)
+            let skipTombstone = false;
+            const srcCreated = (e as any).createdAtSrc;
+            if (
+              val === null &&
+              typeof e.rev === "number" &&
+              typeof maxActiveRev === "number" &&
+              e.rev <= maxActiveRev
+            ) {
+              skipTombstone = false;
+              const entryCreated =
+                typeof this.opts.timeProvider === "function"
+                  ? this.opts.timeProvider()
+                  : nowMs;
+              await maybeConsumePerEntry(
+                tokenBucket,
+                curWriter,
+                key,
+                val,
+                e.rev
+              );
+              curWriter!.add(
+                key,
+                val,
+                e.rev,
+                (e as any).walOffsetSrc,
+                entryCreated
+              );
+              continue;
+            }
+            if (
+              !skipTombstone &&
+              val === null &&
+              typeof srcCreated === "number" &&
+              typeof tombstoneRetentionMs === "number"
+            ) {
+              const ageMs = nowMs - srcCreated;
+              if (ageMs > tombstoneRetentionMs) skipTombstone = true;
+            }
+            if (!skipTombstone) {
+              const entryCreated =
+                typeof this.opts.timeProvider === "function"
+                  ? this.opts.timeProvider()
+                  : nowMs;
+              await maybeConsumePerEntry(
+                tokenBucket,
+                curWriter,
+                key,
+                val,
+                e.rev
+              );
+              curWriter!.add(
+                key,
+                val,
+                e.rev,
+                (e as any).walOffsetSrc,
+                entryCreated
+              );
+            }
+          }
+
+          await rotateWriter();
+
+          // set walOffset and persist
+          const walOff = this.manifest.getWalOffset();
+          for (const mm of metas) mm.walOffset = walOff;
+          const oldPaths = group.map((g) => g.file);
+          for (const mm of metas) created.add(mm.file);
+          this.manifest.replaceFiles(oldPaths, metas);
+          for (const p of oldPaths) {
+            try {
+              if (existsSync(p)) requestDelete(p);
+            } catch {}
+          }
+
+          for (const g of group) {
+            processed.add(g.file);
+            compactedNext.add(g.file);
+          }
+
+          // recompute levelFiles/levelSize for the while loop
+          levelFiles = this.manifest
+            .listFilesByLevel(level)
+            .filter((f) => !created.has(f.file));
+          levelSize = computeLevelSize(levelFiles);
+        }
+      } else {
+        // legacy behavior: iterate files and compact/promote individually
+        for (const f of filesAtLevel) {
+          if (processed.has(f.file)) continue;
+
+          const overlapsNext = filesNext.filter(
+            (n) => !compactedNext.has(n.file) && overlaps(f, n)
+          );
+
+          if (overlapsNext.length === 0) {
+            // promote file to next level
+            this.manifest.replaceFiles(
+              [f.file],
+              [
+                {
+                  file: f.file,
+                  minKeyHex: f.minKeyHex,
+                  maxKeyHex: f.maxKeyHex,
+                  size: f.size,
+                  level: nextLevel,
+                  walOffset: f.walOffset,
+                },
+              ]
             );
-            willExceed = sim > maxSstSize;
-          } else if (curWriter) {
-            willExceed =
-              curWriter.estimateSizeAfterAdd(key, val, e.rev) > maxSstSize;
-          } else {
-            willExceed = entrySize > maxSstSize;
-          }
-          if (!curWriter || willExceed) {
-            // rotate
-            await rotateWriter();
-            const outFile = `${this.dir}/compacted_${Date.now()}_${Math.random()
-              .toString(16)
-              .slice(2)}.sst`;
-            const tmp = `${outFile}.tmp`;
-            curTmp = tmp;
-            curOut = outFile;
-            curWriter = new SSTWriter(tmp, outFile);
-            approxSize = 0;
-          }
-          if (curMin === null || Buffer.compare(key, curMin) < 0) curMin = key;
-          if (curMax === null || Buffer.compare(key, curMax) > 0) curMax = key;
-          // Tombstone GC: respect minActiveRev, then optional time-based TTL from source SST
-          let skipTombstone = false;
-          const srcCreated = (e as any).createdAtSrc;
-          if (
-            val === null &&
-            typeof e.rev === "number" &&
-            typeof maxActiveRev === "number" &&
-            e.rev <= maxActiveRev
-          ) {
-            // preserve for active snapshot
-            skipTombstone = false;
-            const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
-            // per-entry throttling
-            await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
-            curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
-            approxSize += entrySize;
+            processed.add(f.file);
             continue;
           }
-          if (
-            !skipTombstone &&
-            val === null &&
-            typeof srcCreated === 'number' &&
-            typeof tombstoneRetentionMs === 'number'
-          ) {
-            const ageMs = nowMs - srcCreated;
-            if (ageMs > tombstoneRetentionMs) skipTombstone = true;
+
+          // group files to compact
+          const group = [f, ...overlapsNext];
+          const readers: SSTReader[] = [];
+          for (const g of group) {
+            try {
+              if (!existsSync(g.file)) continue;
+              readers.push(SSTReader.open(g.file));
+            } catch (e) {}
           }
-          if (!skipTombstone) {
-            const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
-            if (tokenBucket) {
-              try {
-                const delta =
-                  typeof (curWriter as any).deltaSizeForEntry === "function"
-                    ? (curWriter as any).deltaSizeForEntry(key, val, e.rev)
-                    : (key?.length || 0) + (val ? val.length : 0) + 10;
-                if (delta > 0) await tokenBucket.consume(delta);
-              } catch (e) {}
+
+          if (readers.length === 0) {
+            for (const g of group) processed.add(g.file);
+            continue;
+          }
+
+          const iterables = readers.map((r, idx) => {
+            const srcWal =
+              group[idx] && typeof (group[idx] as any).walOffset === "number"
+                ? (group[idx] as any).walOffset
+                : undefined;
+            const srcCreated =
+              group[idx] && typeof (group[idx] as any).createdAt === "number"
+                ? (group[idx] as any).createdAt
+                : undefined;
+            return (async function* () {
+              for await (const it of r.iterator()) {
+                yield Object.assign({}, it, {
+                  walOffsetSrc: srcWal,
+                  createdAtSrc: srcCreated,
+                });
+              }
+            })();
+          });
+
+          // Split merged output into multiple SSTs each <= maxSstSize (computed per-target-level)
+          const metas: any[] = [];
+          let curWriter: SSTWriter | null = null;
+          let curTmp: string | null = null;
+          let curOut: string | null = null;
+          let curMin: Buffer | null = null;
+          let curMax: Buffer | null = null;
+
+          async function rotateWriter() {
+            if (!curWriter) return;
+            const estimated =
+              typeof (curWriter as any).getEstimatedSize === "function"
+                ? (curWriter as any).getEstimatedSize()
+                : 0;
+            if (tokenBucket && estimated > 0) {
+              await tokenBucket.consume(estimated);
             }
-            curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
+            const m = curWriter.finish();
+            metas.push({
+              file: m.file,
+              minKeyHex: m.minKey.toString("hex"),
+              maxKeyHex: m.maxKey.toString("hex"),
+              size: m.size,
+              level: nextLevel,
+              walOffset: 0,
+              createdAt: Date.now(),
+            });
+            curWriter = null;
+            curTmp = null;
+            curOut = null;
+            curMin = null;
+            curMax = null;
           }
-          approxSize += entrySize;
-        }
-        // flush final
-        await rotateWriter();
 
-        // set walOffset for metas
-        const walOff = this.manifest.getWalOffset();
-        for (const mm of metas) mm.walOffset = walOff;
+          let approxSize = 0;
+          for await (const e of kWayMerge(iterables)) {
+            const key = e.key;
+            const val = e.value;
+            const entrySize = (key?.length || 0) + (val ? val.length : 0) + 8; // fallback rough
+            let willExceed = false;
+            if (
+              curWriter &&
+              typeof (curWriter as any).simulatedSizeAfterAdd === "function"
+            ) {
+              const sim = (curWriter as any).simulatedSizeAfterAdd(
+                key,
+                val,
+                e.rev
+              );
+              willExceed = sim > maxSstSize;
+            } else if (curWriter) {
+              willExceed =
+                curWriter.estimateSizeAfterAdd(key, val, e.rev) > maxSstSize;
+            } else {
+              willExceed = entrySize > maxSstSize;
+            }
+            if (!curWriter || willExceed) {
+              // rotate
+              await rotateWriter();
+              const outFile = `${
+                this.dir
+              }/compacted_${Date.now()}_${Math.random()
+                .toString(16)
+                .slice(2)}.sst`;
+              const tmp = `${outFile}.tmp`;
+              curTmp = tmp;
+              curOut = outFile;
+              curWriter = new SSTWriter(tmp, outFile);
+              approxSize = 0;
+            }
+            if (curMin === null || Buffer.compare(key, curMin) < 0)
+              curMin = key;
+            if (curMax === null || Buffer.compare(key, curMax) > 0)
+              curMax = key;
+            // Tombstone GC: respect minActiveRev, then optional time-based TTL from source SST
+            let skipTombstone = false;
+            const srcCreated = (e as any).createdAtSrc;
+            if (
+              val === null &&
+              typeof e.rev === "number" &&
+              typeof maxActiveRev === "number" &&
+              e.rev <= maxActiveRev
+            ) {
+              // preserve for active snapshot
+              skipTombstone = false;
+              const entryCreated =
+                typeof this.opts.timeProvider === "function"
+                  ? this.opts.timeProvider()
+                  : nowMs;
+              // per-entry throttling
+              await maybeConsumePerEntry(
+                tokenBucket,
+                curWriter,
+                key,
+                val,
+                e.rev
+              );
+              curWriter!.add(
+                key,
+                val,
+                e.rev,
+                (e as any).walOffsetSrc,
+                entryCreated
+              );
+              approxSize += entrySize;
+              continue;
+            }
+            if (
+              !skipTombstone &&
+              val === null &&
+              typeof srcCreated === "number" &&
+              typeof tombstoneRetentionMs === "number"
+            ) {
+              const ageMs = nowMs - srcCreated;
+              if (ageMs > tombstoneRetentionMs) skipTombstone = true;
+            }
+            if (!skipTombstone) {
+              const entryCreated =
+                typeof this.opts.timeProvider === "function"
+                  ? this.opts.timeProvider()
+                  : nowMs;
+              if (tokenBucket) {
+                try {
+                  const delta =
+                    typeof (curWriter as any).deltaSizeForEntry === "function"
+                      ? (curWriter as any).deltaSizeForEntry(key, val, e.rev)
+                      : (key?.length || 0) + (val ? val.length : 0) + 10;
+                  if (delta > 0) await tokenBucket.consume(delta);
+                } catch (e) {}
+              }
+              curWriter!.add(
+                key,
+                val,
+                e.rev,
+                (e as any).walOffsetSrc,
+                entryCreated
+              );
+            }
+            approxSize += entrySize;
+          }
+          // flush final
+          await rotateWriter();
 
-        // mark created files and persist new metas replacing oldPaths
-        const oldPaths = group.map((g) => g.file);
-        for (const mm of metas) created.add(mm.file);
-        this.manifest.replaceFiles(oldPaths, metas);
+          // set walOffset for metas
+          const walOff = this.manifest.getWalOffset();
+          for (const mm of metas) mm.walOffset = walOff;
 
-        for (const p of oldPaths) {
-          try {
-            if (existsSync(p)) requestDelete(p);
-          } catch {}
-        }
+          // mark created files and persist new metas replacing oldPaths
+          const oldPaths = group.map((g) => g.file);
+          for (const mm of metas) created.add(mm.file);
+          this.manifest.replaceFiles(oldPaths, metas);
 
-        for (const g of group) {
-          processed.add(g.file);
-          compactedNext.add(g.file);
+          for (const p of oldPaths) {
+            try {
+              if (existsSync(p)) requestDelete(p);
+            } catch {}
+          }
+
+          for (const g of group) {
+            processed.add(g.file);
+            compactedNext.add(g.file);
+          }
         }
       }
     }

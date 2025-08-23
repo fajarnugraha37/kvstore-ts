@@ -71,11 +71,17 @@ describe("Wal vs HandoffWal parity", () => {
     );
 
     // currentEndOffset parity
-    const eA = typeof wA.currentEndOffset === "function" ? wA.currentEndOffset() : null;
-    const eB = typeof wB.currentEndOffset === "function" ? wB.currentEndOffset() : null;
+    const eA =
+      typeof wA.currentEndOffset === "function" ? wA.currentEndOffset() : null;
+    const eB =
+      typeof wB.currentEndOffset === "function" ? wB.currentEndOffset() : null;
     expect(typeof eA).toBe(typeof eB);
 
-    try { if (wA.close) await wA.close(); } catch {}
-    try { if (wB.close) await wB.close(); } catch {}
+    try {
+      if (wA.close) await wA.close();
+    } catch {}
+    try {
+      if (wB.close) await wB.close();
+    } catch {}
   });
 });

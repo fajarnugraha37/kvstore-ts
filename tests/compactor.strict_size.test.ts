@@ -43,57 +43,57 @@ describe("compactor strict size enforcement", () => {
       // open engine to ensure background compactor starts
       await e.open();
 
-    // wait up to 5s for compaction to run and manifest to be updated
-    const deadline = Date.now() + 5000;
-    let success = false;
-    while (Date.now() < deadline) {
-      // reload persisted manifest so we observe Engine-updated entries
-      const persisted = Manifest.load(dir);
-      const files = persisted.listFilesByLevel(1);
-      if (files.length > 0) {
-        // check sizes on disk
-        let ok = true;
-        for (const f of files) {
-          try {
-            if (!existsSync(f.file)) {
+      // wait up to 5s for compaction to run and manifest to be updated
+      const deadline = Date.now() + 5000;
+      let success = false;
+      while (Date.now() < deadline) {
+        // reload persisted manifest so we observe Engine-updated entries
+        const persisted = Manifest.load(dir);
+        const files = persisted.listFilesByLevel(1);
+        if (files.length > 0) {
+          // check sizes on disk
+          let ok = true;
+          for (const f of files) {
+            try {
+              if (!existsSync(f.file)) {
+                ok = false;
+                break;
+              }
+              const r = SSTReader.open(f.file);
+              // file size from manifest should be exact; assert size <= maxSst
+              if (typeof f.size === "number") {
+                if (f.size > maxSst) {
+                  ok = false;
+                  break;
+                }
+              } else {
+                // fallback: if manifest lacks size, use reader to approximate by reading footer; remove if larger
+                // open throws if file corrupted
+                // use fs.stat to read size
+                const stat = statSync(f.file);
+                if (stat.size > maxSst) {
+                  ok = false;
+                  break;
+                }
+              }
+            } catch (e) {
               ok = false;
               break;
             }
-            const r = SSTReader.open(f.file);
-            // file size from manifest should be exact; assert size <= maxSst
-            if (typeof f.size === "number") {
-              if (f.size > maxSst) {
-                ok = false;
-                break;
-              }
-            } else {
-              // fallback: if manifest lacks size, use reader to approximate by reading footer; remove if larger
-              // open throws if file corrupted
-              // use fs.stat to read size
-              const stat = statSync(f.file);
-              if (stat.size > maxSst) {
-                ok = false;
-                break;
-              }
-            }
-          } catch (e) {
-            ok = false;
+          }
+          if (ok) {
+            success = true;
             break;
           }
         }
-        if (ok) {
-          success = true;
-          break;
-        }
+        await new Promise((r) => setTimeout(r, 200));
       }
-      await new Promise((r) => setTimeout(r, 200));
-    }
 
-        // cleanup
-        try {
-          await e.close();
-        } catch {}
-        expect(success).toBe(true);
-      });
+      // cleanup
+      try {
+        await e.close();
+      } catch {}
+      expect(success).toBe(true);
+    });
   });
 });

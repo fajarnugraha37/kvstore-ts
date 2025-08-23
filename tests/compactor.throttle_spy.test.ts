@@ -54,7 +54,13 @@ describe("compactor per-entry throttle spy", () => {
       const throttle = require("../libs/storage/throttle");
       let calls = 0;
       const origSetter = throttle.__setMaybeConsumeForTests;
-      throttle.__setMaybeConsumeForTests(async function (tokenBucket: any, writer: any, key: any, val: any, rev: any) {
+      throttle.__setMaybeConsumeForTests(async function (
+        tokenBucket: any,
+        writer: any,
+        key: any,
+        val: any,
+        rev: any
+      ) {
         calls++;
         return;
       });
@@ -65,8 +71,8 @@ describe("compactor per-entry throttle spy", () => {
       });
       const res = await compactor.compact();
 
-  // restore original
-  if (typeof origSetter === 'function') origSetter(null);
+      // restore original
+      if (typeof origSetter === "function") origSetter(null);
 
       expect(calls).toBeGreaterThan(0);
       // compaction should have created at least one file

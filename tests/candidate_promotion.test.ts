@@ -21,25 +21,25 @@ describe("Compactor candidate promotion", () => {
       });
       await e.open();
 
-    const k = Buffer.from("cand");
-    // produce multiple SSTs each containing a different revision
-    await e.put(k, Buffer.from("v1"));
-    await e.flush();
-    now += 1; // advance time slightly
-    await e.put(k, Buffer.from("v2"));
-    await e.flush();
-    now += 1;
-    // tombstone (rev3)
-    await e.del(k);
-    await e.flush();
+      const k = Buffer.from("cand");
+      // produce multiple SSTs each containing a different revision
+      await e.put(k, Buffer.from("v1"));
+      await e.flush();
+      now += 1; // advance time slightly
+      await e.put(k, Buffer.from("v2"));
+      await e.flush();
+      now += 1;
+      // tombstone (rev3)
+      await e.del(k);
+      await e.flush();
 
-    // advance time beyond retention so TTL will consider the tombstone expired
-    now += 1000;
-    // run compaction which uses timeProvider; since tombstone TTL expired,
-    // compactor should promote v2 as the latest (highest-rev) candidate
-    await e.compactNow();
-    const latest = e.get(k);
-    expect(latest && latest.toString()).toBe("v2");
+      // advance time beyond retention so TTL will consider the tombstone expired
+      now += 1000;
+      // run compaction which uses timeProvider; since tombstone TTL expired,
+      // compactor should promote v2 as the latest (highest-rev) candidate
+      await e.compactNow();
+      const latest = e.get(k);
+      expect(latest && latest.toString()).toBe("v2");
       await e.close();
     });
   });

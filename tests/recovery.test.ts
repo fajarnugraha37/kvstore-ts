@@ -28,55 +28,55 @@ describe("recovery tests", () => {
       const e = new Engine(dir, "log.wal", { walImpl: impl });
       await e.open();
 
-    // put some entries and flush to create an SST
-    await e.put(Buffer.from("k1"), Buffer.from("v1"));
-    await e.put(Buffer.from("k2"), Buffer.from("v2"));
-    await e.flush();
+      // put some entries and flush to create an SST
+      await e.put(Buffer.from("k1"), Buffer.from("v1"));
+      await e.put(Buffer.from("k2"), Buffer.from("v2"));
+      await e.flush();
 
-    // locate the SST file created in manifest
-    const m = (e as any).manifest.listFiles();
-    expect(m.length).toBeGreaterThan(0);
-    const sstFile = m[0].file as string;
-    expect(sstFile).toBeDefined();
+      // locate the SST file created in manifest
+      const m = (e as any).manifest.listFiles();
+      expect(m.length).toBeGreaterThan(0);
+      const sstFile = m[0].file as string;
+      expect(sstFile).toBeDefined();
 
-    // truncate the SST file to simulate a crash during write
-    const st = statSync(sstFile);
-    // keep only first half
-    const truncateTo = Math.max(16, Math.floor(st.size / 2));
-    const fd = fs.openSync(sstFile, "r+");
-    fs.ftruncateSync(fd, truncateTo);
-    fs.closeSync(fd);
+      // truncate the SST file to simulate a crash during write
+      const st = statSync(sstFile);
+      // keep only first half
+      const truncateTo = Math.max(16, Math.floor(st.size / 2));
+      const fd = fs.openSync(sstFile, "r+");
+      fs.ftruncateSync(fd, truncateTo);
+      fs.closeSync(fd);
 
-    // now reopen engine; it should remove the broken sst from manifest and replay WAL to restore data
-    if (process.env.KV_DUMP_PRE_OPEN === "1") {
-      try {
-        console.log("--- DEBUG: data dir listing before e2.open ---");
-        const files = fs.readdirSync(dir);
-        for (const f of files) {
-          try {
-            const st = fs.statSync(path.join(dir, f));
-            console.log(f, st.size, st.isFile() ? "file" : "dir");
-            if (f === "manifest.json") {
-              try {
-                console.log(
-                  "manifest:",
-                  fs.readFileSync(path.join(dir, f), "utf8")
-                );
-              } catch (e) {}
-            }
-          } catch (e) {}
-        }
-        console.log("--- END DEBUG ---");
-      } catch (e) {}
-    }
-  const e2 = new Engine(dir, "log.wal", { walImpl: impl });
-  await e2.open();
+      // now reopen engine; it should remove the broken sst from manifest and replay WAL to restore data
+      if (process.env.KV_DUMP_PRE_OPEN === "1") {
+        try {
+          console.log("--- DEBUG: data dir listing before e2.open ---");
+          const files = fs.readdirSync(dir);
+          for (const f of files) {
+            try {
+              const st = fs.statSync(path.join(dir, f));
+              console.log(f, st.size, st.isFile() ? "file" : "dir");
+              if (f === "manifest.json") {
+                try {
+                  console.log(
+                    "manifest:",
+                    fs.readFileSync(path.join(dir, f), "utf8")
+                  );
+                } catch (e) {}
+              }
+            } catch (e) {}
+          }
+          console.log("--- END DEBUG ---");
+        } catch (e) {}
+      }
+      const e2 = new Engine(dir, "log.wal", { walImpl: impl });
+      await e2.open();
 
-    // k1 and k2 should be available via WAL replay
-    const v1 = e2.get(Buffer.from("k1"));
-    const v2 = e2.get(Buffer.from("k2"));
-    expect(v1?.toString()).toBe("v1");
-    expect(v2?.toString()).toBe("v2");
+      // k1 and k2 should be available via WAL replay
+      const v1 = e2.get(Buffer.from("k1"));
+      const v2 = e2.get(Buffer.from("k2"));
+      expect(v1?.toString()).toBe("v1");
+      expect(v2?.toString()).toBe("v2");
       // close engines if present
       if ((e as any).close) await (e as any).close();
       if ((e2 as any).close) await (e2 as any).close();

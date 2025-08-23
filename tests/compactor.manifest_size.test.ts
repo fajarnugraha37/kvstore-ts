@@ -36,15 +36,15 @@ describe("compactor manifest size fidelity", () => {
       await e.open();
       // run compaction synchronously to avoid races
       const res = await e.compactNow();
-    // reload manifest
-    const persisted = Manifest.load(dir);
-    const files = persisted.listFiles();
-    expect(files.length).toBeGreaterThan(0);
-    for (const f of files) {
-      if (!existsSync(f.file)) continue;
-      const st = statSync(f.file);
-      expect(st.size).toBe(f.size);
-    }
+      // reload manifest
+      const persisted = Manifest.load(dir);
+      const files = persisted.listFiles();
+      expect(files.length).toBeGreaterThan(0);
+      for (const f of files) {
+        if (!existsSync(f.file)) continue;
+        const st = statSync(f.file);
+        expect(st.size).toBe(f.size);
+      }
       await e.close();
     });
   });
