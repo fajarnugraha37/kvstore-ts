@@ -52,6 +52,9 @@ export type SSTWriterOptions = {
   maxBitsPerEntry?: number;
   compressionAlgo?: number; // 0 = none, 1 = deflate
   compressionThreshold?: number; // minimum raw block size to attempt compression
+  adaptiveCompression?: boolean; // if true, sample blocks and only compress when sample compresses well
+  compressionSampleSize?: number; // bytes to sample from block when adaptiveCompression enabled
+  minCompressionRatio?: number; // sample compressed/raw ratio threshold to consider compressing (0..1)
   // when true, perform durable fsyncs on tmp files and parent dir after rename
   strictAtomicity?: boolean;
 };
@@ -444,12 +447,27 @@ export class SSTWriter {
       let storedLen = rawBlock.length;
       // compress per-block if requested and compressed smaller
       // attempt compression only when requested and block is reasonably large
-      if (compression && rawBlock.length > compressionThreshold) {
-        // noop here; actual compression done via sstable helper below
+      let shouldTryCompress =
+        compression && rawBlock.length > compressionThreshold;
+      // adaptive compression: sample a portion of the block and only compress full block
+      // if the sample compresses sufficiently (helps avoid compressing already-compressed data)
+      if (shouldTryCompress && this.opts.adaptiveCompression) {
+        const sampleSize = this.opts.compressionSampleSize ?? 1024; // 1KB default
+        const minRatio = this.opts.minCompressionRatio ?? 0.9; // require at least 10% reduction
+        const sample = rawBlock.slice(0, Math.min(rawBlock.length, sampleSize));
+        try {
+          const sComp = compressBlock(sample, compression);
+          const ratio = sComp.length / Math.max(1, sample.length);
+          // only attempt full compression if sample compresses better than threshold
+          shouldTryCompress = ratio <= minRatio;
+        } catch (e) {
+          shouldTryCompress = false;
+        }
       }
-      // apply compression using helper from sstable.ts if available
+
+      // apply compression using helper from sstable.ts if available and heuristic allowed
       try {
-        if (compression && COMPRESSION_DEFLATE) {
+        if (shouldTryCompress && COMPRESSION_DEFLATE) {
           const compressed = compressBlock(rawBlock, compression);
           if (compressed.length < rawBlock.length) {
             blockBuf = compressed as Buffer<ArrayBuffer>;
@@ -623,6 +641,18 @@ export class SSTWriter {
           })()
         : Buffer.alloc(0);
 
-    return { file: this.finalPath, minKey, maxKey, size: fileBuf.length };
+    // count compressed blocks by comparing storedLens flag
+    let compressed = 0;
+    for (const ln of storedLens)
+      if ((ln & BLOCK_COMPRESSED_FLAG) !== 0) compressed++;
+    const total = blocksBufs.length;
+    return {
+      file: this.finalPath,
+      minKey,
+      maxKey,
+      size: fileBuf.length,
+      compressedBlocks: compressed,
+      totalBlocks: total,
+    };
   }
 }

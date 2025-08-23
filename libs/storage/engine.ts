@@ -27,6 +27,8 @@ export class Engine {
       bytesWritten: 0,
       filesCreated: 0,
       lastDurationMs: 0,
+      compressedBlocks: 0,
+      compressionAttempts: 0,
     },
   };
   private mem = new MemTable();
@@ -58,6 +60,12 @@ export class Engine {
       // when true, SSTWriter and Manifest will perform durable fsyncs on tmp files and parent dir
       // during writes/renames (best-effort). Explicit engine-level flag overrides compactorOptions.
       strictAtomicity?: boolean;
+      // compression options that are applied when Engine creates SSTWriter instances
+      compressionAlgo?: number;
+      compressionThreshold?: number;
+      adaptiveCompression?: boolean;
+      compressionSampleSize?: number;
+      minCompressionRatio?: number;
     }
   ) {
     const manifestStrict =
@@ -95,6 +103,11 @@ export class Engine {
           this.metrics.compaction.bytesWritten += res.bytesWritten;
         if (res && typeof res.filesCreated === "number")
           this.metrics.compaction.filesCreated += res.filesCreated;
+        if (res && typeof res.compressedBlocks === "number")
+          this.metrics.compaction.compressedBlocks += res.compressedBlocks;
+        if (res && typeof res.compressionAttempts === "number")
+          this.metrics.compaction.compressionAttempts +=
+            res.compressionAttempts;
         this.metrics.compaction.lastDurationMs = dur;
       } catch (e) {
         // ignore compaction errors in background
@@ -284,6 +297,11 @@ export class Engine {
                   (this.opts.compactorOptions as any).strictAtomicity
             )
               wOptsRebuild.strictAtomicity = true;
+            if (typeof this.opts?.compressionAlgo === "number")
+              wOptsRebuild.compressionAlgo = this.opts.compressionAlgo;
+            if (typeof this.opts?.compressionThreshold === "number")
+              wOptsRebuild.compressionThreshold =
+                this.opts.compressionThreshold;
             const w = new SSTWriter(tmp, final, wOptsRebuild);
             // track last included WAL end offset
             let lastWalEnd: number | undefined = undefined;
@@ -849,6 +867,16 @@ export class Engine {
           (this.opts.compactorOptions as any).strictAtomicity
     )
       wOpts.strictAtomicity = true;
+    if (typeof this.opts?.compressionAlgo === "number")
+      wOpts.compressionAlgo = this.opts.compressionAlgo;
+    if (typeof this.opts?.compressionThreshold === "number")
+      wOpts.compressionThreshold = this.opts.compressionThreshold;
+    if (typeof this.opts?.adaptiveCompression === "boolean")
+      wOpts.adaptiveCompression = this.opts.adaptiveCompression;
+    if (typeof this.opts?.compressionSampleSize === "number")
+      wOpts.compressionSampleSize = this.opts.compressionSampleSize;
+    if (typeof this.opts?.minCompressionRatio === "number")
+      wOpts.minCompressionRatio = this.opts.minCompressionRatio;
     const w = new SSTWriter(tmp, final, wOpts);
     for await (const e of snap.iterator()) {
       const entryCreated =

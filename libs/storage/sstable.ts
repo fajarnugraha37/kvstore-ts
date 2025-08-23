@@ -25,6 +25,8 @@ export type FileMeta = {
   minKey: Buffer;
   maxKey: Buffer;
   size: number;
+  compressedBlocks?: number;
+  totalBlocks?: number;
 };
 
 // Named constants for header/footer sizes and magic values so index math is clear

@@ -27,6 +27,12 @@ export type CompactorOptions = {
   tombstoneRetentionMs?: number;
   // Optional time provider for deterministic tests (returns epoch ms)
   timeProvider?: () => number;
+  // Compression options passed to SSTWriter: algorithm id and minimum block size to attempt compression
+  compressionAlgo?: number; // 0 = none, 1 = deflate
+  compressionThreshold?: number; // bytes, minimum block size to try compression
+  adaptiveCompression?: boolean;
+  compressionSampleSize?: number;
+  minCompressionRatio?: number;
   // When true, perform durable fsyncs on tmp files and parent dir after rename for strict atomicity.
   // This may be slower but reduces window for lost renames on crash.
   strictAtomicity?: boolean;
@@ -42,7 +48,12 @@ export class Compactor {
     this.opts = opts || {};
   }
 
-  async compact(): Promise<{ bytesWritten: number; filesCreated: number }> {
+  async compact(): Promise<{
+    bytesWritten: number;
+    filesCreated: number;
+    compressedBlocks?: number;
+    compressionAttempts?: number;
+  }> {
     // Multi-level compaction: for each level, pick candidate files and overlapping files in next level
     // and compact them into the next level. If a file has no overlap in next level, promote it.
     const maxLevels = 6; // scan levels 0..5
@@ -71,9 +82,24 @@ export class Compactor {
     const created = new Set<string>();
     const maxFilesPerCompaction = this.opts.maxFilesPerCompaction || 20;
     const globalMaxSstSize = this.opts.maxSstSize || 16 * 1024;
+    // Build per-level size targets. If user provided perLevelMax use it; otherwise
+    // compute sensible defaults (exponential growth per level) so compaction can
+    // be size-target driven even when not explicitly configured.
+    const userProvidedPerLevel = Array.isArray(this.opts.perLevelMax);
+    const perLevelMaxArr: number[] = userProvidedPerLevel
+      ? (this.opts.perLevelMax as number[])
+      : (() => {
+          const base = globalMaxSstSize; // default base target for level0
+          const arr: number[] = [];
+          for (let i = 0; i < maxLevels; i++)
+            arr.push(Math.floor(base * Math.pow(10, i)));
+          return arr;
+        })();
     // compaction stats
     let totalBytesWritten = 0;
     let totalFilesCreated = 0;
+    let totalCompressedBlocks = 0;
+    let totalCompressionAttempts = 0;
     const throttleBps =
       this.opts.bytesPerSecond && this.opts.bytesPerSecond > 0
         ? this.opts.bytesPerSecond
@@ -136,10 +162,10 @@ export class Compactor {
         : Date.now();
     for (let level = 0; level < maxLevels; level++) {
       // determine per-output SST max size for this compaction target level (nextLevel)
-      const maxSstSize =
-        this.opts.perLevelMax && Array.isArray(this.opts.perLevelMax)
-          ? this.opts.perLevelMax[level + 1] ?? globalMaxSstSize
-          : globalMaxSstSize;
+      // If user explicitly provided perLevelMax, use it; otherwise default to globalMaxSstSize
+      const maxSstSize: number = userProvidedPerLevel
+        ? perLevelMaxArr[level + 1] ?? globalMaxSstSize
+        : globalMaxSstSize;
       // skip files created earlier in this compaction run
       const filesAtLevel = this.manifest
         .listFilesByLevel(level)
@@ -150,8 +176,20 @@ export class Compactor {
         .listFilesByLevel(nextLevel)
         .filter((f) => !created.has(f.file));
 
-      // Special-case level 0: compact all files in level 0 together (plus any overlapping files in level1)
+      // Special-case level 0: only compact level 0 when its total size exceeds the target.
       if (level === 0) {
+        // If user explicitly provided per-level targets, only compact level 0 when it exceeds the target.
+        if (userProvidedPerLevel) {
+          const level0Size = filesAtLevel.reduce(
+            (s, f) => s + (f.size || 0),
+            0
+          );
+          const level0Target = perLevelMaxArr[0];
+          if (typeof level0Target === "number" && level0Size <= level0Target) {
+            // nothing to do for level 0 if it is within target
+            continue;
+          }
+        }
         // pick up to maxFilesPerCompaction from level0
         const group: typeof filesAtLevel = [];
         for (
@@ -232,6 +270,11 @@ export class Compactor {
             await tokenBucket.consume(estimated);
           }
           const m = curWriter.finish();
+          // collect compression stats if available
+          if (m && typeof m.compressedBlocks === "number")
+            totalCompressedBlocks += m.compressedBlocks;
+          if (m && typeof m.totalBlocks === "number")
+            totalCompressionAttempts += m.totalBlocks;
           metas.push({
             file: m.file,
             minKeyHex: m.minKey.toString("hex"),
@@ -290,6 +333,39 @@ export class Compactor {
             const writerOpts: any = {};
             if (this.opts && (this.opts as any).strictAtomicity)
               writerOpts.strictAtomicity = true;
+            if (
+              this.opts &&
+              typeof (this.opts as any).compressionAlgo === "number"
+            )
+              writerOpts.compressionAlgo = (this.opts as any).compressionAlgo;
+            if (
+              this.opts &&
+              typeof (this.opts as any).compressionThreshold === "number"
+            )
+              writerOpts.compressionThreshold = (
+                this.opts as any
+              ).compressionThreshold;
+            if (
+              this.opts &&
+              typeof (this.opts as any).adaptiveCompression === "boolean"
+            )
+              writerOpts.adaptiveCompression = (
+                this.opts as any
+              ).adaptiveCompression;
+            if (
+              this.opts &&
+              typeof (this.opts as any).compressionSampleSize === "number"
+            )
+              writerOpts.compressionSampleSize = (
+                this.opts as any
+              ).compressionSampleSize;
+            if (
+              this.opts &&
+              typeof (this.opts as any).minCompressionRatio === "number"
+            )
+              writerOpts.minCompressionRatio = (
+                this.opts as any
+              ).minCompressionRatio;
             curWriter = new SSTWriter(tmp, outFile, writerOpts);
             approxSize = 0;
           }
@@ -629,6 +705,10 @@ export class Compactor {
               await tokenBucket.consume(estimated);
             }
             const m = curWriter.finish();
+            if (m && typeof m.compressedBlocks === "number")
+              totalCompressedBlocks += m.compressedBlocks;
+            if (m && typeof m.totalBlocks === "number")
+              totalCompressionAttempts += m.totalBlocks;
             metas.push({
               file: m.file,
               minKeyHex: m.minKey.toString("hex"),
@@ -673,6 +753,41 @@ export class Compactor {
               const writerOpts2: any = {};
               if (this.opts && (this.opts as any).strictAtomicity)
                 writerOpts2.strictAtomicity = true;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionAlgo === "number"
+              )
+                writerOpts2.compressionAlgo = (
+                  this.opts as any
+                ).compressionAlgo;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionThreshold === "number"
+              )
+                writerOpts2.compressionThreshold = (
+                  this.opts as any
+                ).compressionThreshold;
+              if (
+                this.opts &&
+                typeof (this.opts as any).adaptiveCompression === "boolean"
+              )
+                writerOpts2.adaptiveCompression = (
+                  this.opts as any
+                ).adaptiveCompression;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionSampleSize === "number"
+              )
+                writerOpts2.compressionSampleSize = (
+                  this.opts as any
+                ).compressionSampleSize;
+              if (
+                this.opts &&
+                typeof (this.opts as any).minCompressionRatio === "number"
+              )
+                writerOpts2.minCompressionRatio = (
+                  this.opts as any
+                ).minCompressionRatio;
               curWriter = new SSTWriter(tmp, outFile, writerOpts2);
             }
 
@@ -842,6 +957,10 @@ export class Compactor {
               await tokenBucket.consume(estimated);
             }
             const m = curWriter.finish();
+            if (m && typeof m.compressedBlocks === "number")
+              totalCompressedBlocks += m.compressedBlocks;
+            if (m && typeof m.totalBlocks === "number")
+              totalCompressionAttempts += m.totalBlocks;
             metas.push({
               file: m.file,
               minKeyHex: m.minKey.toString("hex"),
@@ -894,6 +1013,41 @@ export class Compactor {
               const writerOpts3: any = {};
               if (this.opts && (this.opts as any).strictAtomicity)
                 writerOpts3.strictAtomicity = true;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionAlgo === "number"
+              )
+                writerOpts3.compressionAlgo = (
+                  this.opts as any
+                ).compressionAlgo;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionThreshold === "number"
+              )
+                writerOpts3.compressionThreshold = (
+                  this.opts as any
+                ).compressionThreshold;
+              if (
+                this.opts &&
+                typeof (this.opts as any).adaptiveCompression === "boolean"
+              )
+                writerOpts3.adaptiveCompression = (
+                  this.opts as any
+                ).adaptiveCompression;
+              if (
+                this.opts &&
+                typeof (this.opts as any).compressionSampleSize === "number"
+              )
+                writerOpts3.compressionSampleSize = (
+                  this.opts as any
+                ).compressionSampleSize;
+              if (
+                this.opts &&
+                typeof (this.opts as any).minCompressionRatio === "number"
+              )
+                writerOpts3.minCompressionRatio = (
+                  this.opts as any
+                ).minCompressionRatio;
               curWriter = new SSTWriter(tmp, outFile, writerOpts3);
               approxSize = 0;
             }
@@ -992,7 +1146,12 @@ export class Compactor {
         }
       }
     }
-    return { bytesWritten: totalBytesWritten, filesCreated: totalFilesCreated };
+    return {
+      bytesWritten: totalBytesWritten,
+      filesCreated: totalFilesCreated,
+      compressedBlocks: totalCompressedBlocks,
+      compressionAttempts: totalCompressionAttempts,
+    };
   }
 }
 
