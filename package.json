@@ -1,6 +1,10 @@
 {
   "name": "kvstore-ts",
+  "version": "0.1.0",
+  "description": "A compact embeddable key/value store implemented in TypeScript (WAL + SST + compaction).",
+  "main": "dist/index.js",
   "module": "src/index.ts",
+  "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
     "test": "node ./scripts/clean_data.cjs && bun test",
@@ -21,6 +25,21 @@
     "@faker-js/faker": "^9.9.0",
     "@types/bun": "latest",
     "@types/snappyjs": "^0.7.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fajarnugraha37/kvstore-ts.git"
+  },
+  "homepage": "https://github.com/fajarnugraha37/kvstore-ts#readme",
+  "bugs": {
+    "url": "https://github.com/fajarnugraha37/kvstore-ts/issues"
+  },
+  "license": "MIT",
+  "author": "fajarnugraha37",
+  "keywords": ["kv","kvstore","wal","sst","storage","typescript"],
+  "files": ["dist","src","lib","apps","wal","storage","manifest","compact","README.md"],
+  "engines": {
+    "node": ">=18"
   },
   "peerDependencies": {
     "typescript": "^5"

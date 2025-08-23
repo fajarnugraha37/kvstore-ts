@@ -1,10 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
+    types: [opened, synchronize, reopened]
+    branches: [ main ]
 
 jobs:
   test:
@@ -26,9 +25,23 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build (TypeScript)
+        run: bun x tsc -p tsconfig.json || npm run build
+
+      - name: Typecheck
+        run: bun x tsc --noEmit || npm run typecheck
+
       - name: Run tests (matrix WAL_IMPL)
         env:
           WAL_IMPL: ${{ matrix.wal_impl }}
         run: |
           echo "Running tests with WAL_IMPL=$WAL_IMPL"
           bun test
+
+      - name: Archive test artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            ./data
