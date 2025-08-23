@@ -7,9 +7,9 @@ import { Manifest } from "./manifest";
 import { kWayMerge } from "./merge_iterator";
 import { cleanupDeleteMarkers } from "./file_refcount";
 import { Compactor } from "./compactor";
-import type { CompactorOptions } from "./compactor";
 import { SSTReader } from "./sstreader";
 import { SSTWriter } from "./sstwriter";
+import type { CompactorOptions } from "./compactor";
 
 type SSTHandle = { reader: SSTReader; meta: any };
 
@@ -42,6 +42,8 @@ export class Engine {
   private walGCTimer: NodeJS.Timeout | null = null;
   // simple per-key async queue for CAS/atomic ops
   private keyQueues: Map<string, (() => void)[]> = new Map();
+  // small global transaction serializer used only to allocate revs safely when needed
+  private _txSerial: Promise<void> = Promise.resolve();
   // track active snapshot revisions to compute min-active-rev for compaction GC
   private activeSnapshotCounts: Map<number, number> = new Map();
 
@@ -153,6 +155,54 @@ export class Engine {
       // if we're first in queue, immediately run ticket
       if (q!.length === 1) ticket();
     });
+  }
+
+  // Acquire locks for multiple keys in deterministic order and return a combined unlock
+  private async acquireKeyLocks(keys: Buffer[]): Promise<() => void> {
+    const uniqueHex = Array.from(
+      new Set(keys.map((k) => k.toString("hex")))
+    ).sort();
+    const unlocks: Array<() => void> = [];
+    for (const hx of uniqueHex) {
+      const buf = Buffer.from(hx, "hex");
+      // acquire sequentially in sorted order to avoid deadlocks
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore access private method
+      const u = await (this as any).acquireKeyLock(buf);
+      unlocks.push(u);
+    }
+    return () => {
+      // release in reverse order
+      while (unlocks.length > 0) {
+        try {
+          const u = unlocks.pop()!;
+          u();
+        } catch {}
+      }
+    };
+  }
+
+  // Allocate `n` consecutive revisions atomically and return them.
+  // Serialized via _txSerial so allocations from concurrent transactions do not interleave.
+  private async allocateRevs(n: number): Promise<number[]> {
+    if (n <= 0) return [];
+    const res: number[] = [];
+    const prev = this._txSerial;
+    // chain a new promise on _txSerial
+    this._txSerial = (async () => {
+      try {
+        await prev;
+        for (let i = 0; i < n; i++) {
+          this.revCounter += 1;
+          res.push(this.revCounter);
+        }
+      } catch (e) {
+        // swallow; caller will observe missing revs if error
+      }
+    })();
+    // wait for our allocation to complete
+    await this._txSerial;
+    return res;
   }
 
   /**
@@ -435,7 +485,7 @@ export class Engine {
       : 0;
     const debugReplay = !!process.env.KV_DEBUG_REPLAY;
     // replay WAL into memtable (skip segments wholly covered by SSTs)
-    for await (const entry of (this.wal as any).scan(minRequiredWalOffset)) {
+  for await (const entry of (this.wal as any).scan(minRequiredWalOffset)) {
       if (debugReplay) {
         try {
           const k =
@@ -449,23 +499,36 @@ export class Engine {
           console.log("[debug replay] entry key=%s value=%s", k, v);
         } catch (e) {}
       }
-      if (entry && entry.key) {
-        // replaying entry into memtable. If WAL contains a revision, honor it; otherwise fall back.
-        const kbuf = Buffer.from(entry.key);
-        if (entry.value == null)
-          this.mem.delete(
-            kbuf,
-            typeof entry.rev === "number" ? entry.rev : undefined
-          );
-        else
-          this.mem.put(
-            kbuf,
-            Buffer.from(entry.value),
-            typeof entry.rev === "number" ? entry.rev : undefined
-          );
-        // keep revCounter at least as large as any seen rev so future writes are monotonically increasing
-        if (typeof entry.rev === "number" && Number.isFinite(entry.rev)) {
-          this.revCounter = Math.max(this.revCounter, entry.rev);
+      if (entry) {
+        // Support plain per-op entries: { key, value, rev }
+        if (entry.key) {
+          const kbuf = Buffer.from(entry.key);
+          if (entry.value == null)
+            this.mem.delete(
+              kbuf,
+              typeof entry.rev === "number" ? entry.rev : undefined
+            );
+          else
+            this.mem.put(
+              kbuf,
+              Buffer.from(entry.value),
+              typeof entry.rev === "number" ? entry.rev : undefined
+            );
+          if (typeof entry.rev === "number" && Number.isFinite(entry.rev)) {
+            this.revCounter = Math.max(this.revCounter, entry.rev);
+          }
+        } else if (entry.tx && Array.isArray(entry.ops)) {
+          // Transaction record: apply each op in order
+          for (const op of entry.ops) {
+            if (!op || !op.key) continue;
+            const kbuf = Buffer.from(op.key);
+            const rev = typeof op.rev === "number" ? op.rev : undefined;
+            if (op.value == null) this.mem.delete(kbuf, rev);
+            else this.mem.put(kbuf, Buffer.from(op.value), rev);
+            if (typeof op.rev === "number" && Number.isFinite(op.rev)) {
+              this.revCounter = Math.max(this.revCounter, op.rev);
+            }
+          }
         }
       }
     }
@@ -479,6 +542,116 @@ export class Engine {
       // use short interval in tests to make it responsive
       this.startBackgroundCompaction(1000);
     }
+  }
+
+  /**
+   * Begin a lightweight transaction (atomic batch). The returned object supports
+   * `put(key, value)` and `del(key)` to enqueue operations and `commit()` / `abort()`.
+   * Commit guarantees that all operations are appended as a single WAL record and
+   * applied atomically to the memtable when the WAL append completes.
+   */
+  beginTransaction() {
+    const ops: Array<{ key: Buffer; value: Buffer | null }> = [];
+    let committed = false;
+    let aborted = false;
+
+    const self = this;
+
+    return {
+      put(key: Buffer, value: Buffer) {
+        if (committed || aborted) throw new Error("transaction already closed");
+        ops.push({ key: Buffer.from(key), value: Buffer.from(value) });
+      },
+      del(key: Buffer) {
+        if (committed || aborted) throw new Error("transaction already closed");
+        ops.push({ key: Buffer.from(key), value: null });
+      },
+      async commit(): Promise<{ ok: boolean; revs?: number[] }> {
+        if (committed || aborted) throw new Error("transaction already closed");
+        if (ops.length === 0) {
+          committed = true;
+          return { ok: true, revs: [] };
+        }
+        // Acquire locks for all keys (sorted order) to avoid deadlocks
+        const lockUnlock = await self.acquireKeyLocks(ops.map((o) => o.key));
+        try {
+          // allocate consecutive revisions for the batch
+          const revs = await self.allocateRevs(ops.length);
+
+          // build WAL record with assigned revs
+          const walOps = ops.map((o, i) => ({
+            key: o.key.toString(),
+            value: o.value === null ? null : o.value.toString(),
+            rev: revs[i],
+          }));
+
+          // append single WAL entry representing the transaction
+          await (self as any).wal.append({ tx: true, ops: walOps });
+
+          // If strict atomicity requested, flush WAL to ensure durability before applying
+          if (
+            typeof self.opts?.strictAtomicity === "boolean"
+              ? self.opts.strictAtomicity
+              : self.opts?.compactorOptions &&
+                (self.opts.compactorOptions as any).strictAtomicity
+          ) {
+            if (typeof (self as any).wal.flush === "function") {
+              try {
+                await (self as any).wal.flush();
+              } catch (e) {
+                // best-effort flush; continue
+              }
+            }
+          }
+
+          // apply to memtable (in same order as ops)
+          for (let i = 0; i < ops.length; i++) {
+            const o = ops[i]!; // non-null assertion
+            const r = revs[i];
+            if (o.value === null) self.mem.delete(o.key, r);
+            else self.mem.put(o.key, o.value, r);
+          }
+
+          committed = true;
+          return { ok: true, revs };
+        } catch (e) {
+          try {
+            console.error(
+              "tx.commit error:",
+              e && typeof (e as any).toString === "function"
+                ? (e as any).toString()
+                : String(e)
+            );
+          } catch {}
+          return { ok: false };
+        } finally {
+          try {
+            // release acquired locks
+            lockUnlock();
+          } catch {}
+        }
+      },
+      abort() {
+        aborted = true;
+      },
+      // internal helper to serialize rev allocation; bound to transaction object
+      async _ensureRevAllocation(fn: () => Promise<void>) {
+        // chain onto engine's txSerial to ensure revCounter increments are serialized
+        const prev = self._txSerial;
+        let resolvePrev: () => void = () => {};
+        const p = new Promise<void>((res) => (resolvePrev = res));
+        self._txSerial = (async () => {
+          try {
+            await prev;
+            await fn();
+          } finally {
+            resolvePrev();
+          }
+        })();
+        // wait for our worker to finish so callers see allocated revs
+        await self._txSerial;
+      },
+    };
   }
 
   async put(key: Buffer, value: Buffer) {
@@ -973,6 +1146,7 @@ export class Engine {
   }
 
   private deleteMarkerTimer: NodeJS.Timeout | null = null;
+
   private startDeleteMarkerGC() {
     if (this.deleteMarkerTimer) return;
     const interval =
