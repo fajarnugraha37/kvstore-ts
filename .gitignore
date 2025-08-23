@@ -37,3 +37,4 @@ libs.bak
 libs/**/*.bak
 data/
 data-*/
+tmp/
