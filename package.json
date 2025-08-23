@@ -5,9 +5,20 @@
   "scripts": {
     "test": "node ./scripts/clean_data.cjs && bun test",
     "bench": "node ./scripts/clean_data.cjs && bun run ./bench/compaction_bench.ts",
-    "ci": "node ./scripts/clean_data.cjs && bun test"
+    "ci": "node ./scripts/clean_data.cjs && bun test",
+
+    "help": "bun run ./apps/cli/cli.ts help",
+    "cli": "bun run ./apps/cli/cli.ts",
+    "shell": "bun run ./apps/cli/cli.ts shell",
+
+    "smoke": "node ./scripts/clean_data.cjs && bun run ./apps/cli/cli.ts put ./data/smoke.key smoke.value && bun run ./apps/cli/cli.ts get ./data/smoke.key",
+
+    "clean": "node ./scripts/clean_data.cjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@faker-js/faker": "^9.9.0",
     "@types/bun": "latest",
     "@types/snappyjs": "^0.7.1"
   },
@@ -15,7 +26,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@faker-js/faker": "^9.9.0",
     "@msgpack/msgpack": "^2.7.0",
     "snappyjs": "^0.7.0"
   }

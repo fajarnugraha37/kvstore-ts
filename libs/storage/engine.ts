@@ -10,8 +10,8 @@ import { Compactor } from "./compactor";
 import { SSTReader } from "./sstreader";
 import { SSTWriter } from "./sstwriter";
 import type { CompactorOptions } from "./compactor";
-import { WatchManager, type WatchBackend } from "../watch/watch_manager";
-import { createWatchBackend } from "../watch/backends/factory";
+import { WatchManager, type WatchBackend } from "../watch";
+import { createWatchBackend } from "../watch/backends";
 
 type SSTHandle = { reader: SSTReader; meta: any };
 
@@ -74,7 +74,7 @@ export class Engine {
   // global monotonically-increasing revision counter for MVCC
   private revCounter = 0;
   private manifest: Manifest;
-  private wal: WalLike;
+  public wal: WalLike;
   private walFile: string;
   private sstReaders: SSTHandle[] = [];
   private flushing = false;
@@ -89,7 +89,7 @@ export class Engine {
   private leases: Map<number, { expiresAt: number; keys: Set<string> }> =
     new Map();
   private keyToLease: Map<string, number> = new Map();
-  private leaseCounter = 0;
+  public leaseCounter = 0;
   private leaseEvictTimer: NodeJS.Timeout | null = null;
   // Optional hook for emitting lease lifecycle events: { type, leaseId, keys? }
   public onLeaseEvent?: (ev: {
@@ -140,19 +140,23 @@ export class Engine {
       this.wal = new Wal(walFile, walOpts);
     }
     (this.wal as any).rootDir = dir;
-  // create watch backend instance (pluggable)
-  if (this.opts && (this.opts as any).watchBackend) {
-    const wb = (this.opts as any).watchBackend;
-    // if user provided an object implementing backend methods, use it directly
-    if (wb && typeof wb.add === "function" && typeof wb.publish === "function") {
-      this.watchManager = wb as WatchBackend;
+    // create watch backend instance (pluggable)
+    if (this.opts && (this.opts as any).watchBackend) {
+      const wb = (this.opts as any).watchBackend;
+      // if user provided an object implementing backend methods, use it directly
+      if (
+        wb &&
+        typeof wb.add === "function" &&
+        typeof wb.publish === "function"
+      ) {
+        this.watchManager = wb as WatchBackend;
+      } else {
+        // otherwise treat it as a factory spec (string or config) and construct
+        this.watchManager = createWatchBackend(wb, this.dir);
+      }
     } else {
-      // otherwise treat it as a factory spec (string or config) and construct
-      this.watchManager = createWatchBackend(wb, this.dir);
+      this.watchManager = new WatchManager();
     }
-  } else {
-    this.watchManager = new WatchManager();
-  }
   }
 
   private compactionTimer: NodeJS.Timeout | null = null;
@@ -338,7 +342,10 @@ export class Engine {
         }
 
         // build WAL ops with lease metadata and createdAt if present
-        const nowCreated = typeof this.opts?.timeProvider === 'function' ? this.opts.timeProvider() : Date.now();
+        const nowCreated =
+          typeof this.opts?.timeProvider === "function"
+            ? this.opts.timeProvider()
+            : Date.now();
         const walOps = entries.map((e, i) => {
           const op: any = {
             key: e.key.toString(),
@@ -348,7 +355,8 @@ export class Engine {
           };
           if (typeof leaseIdToRecord === "number") {
             op.leaseId = leaseIdToRecord;
-            if (typeof leaseExpiresAt === "number") op.leaseExpiresAt = leaseExpiresAt;
+            if (typeof leaseExpiresAt === "number")
+              op.leaseExpiresAt = leaseExpiresAt;
           }
           return op;
         });
@@ -376,7 +384,14 @@ export class Engine {
           const r = revs[i];
           this.mem.put(e.key, e.value, r);
           try {
-            this.watchManager.publish({ key: e.key.toString(), value: e.value.toString(), rev: r, createdAt: nowCreated, leaseId: leaseIdToRecord, leaseExpiresAt });
+            this.watchManager.publish({
+              key: e.key.toString(),
+              value: e.value.toString(),
+              rev: r,
+              createdAt: nowCreated,
+              leaseId: leaseIdToRecord,
+              leaseExpiresAt,
+            });
           } catch {}
         }
       } finally {
@@ -433,7 +448,10 @@ export class Engine {
       }
 
       // persist WAL entry including optional lease metadata so replay can restore mappings
-      const createdAtSingle = typeof this.opts?.timeProvider === 'function' ? this.opts.timeProvider() : Date.now();
+      const createdAtSingle =
+        typeof this.opts?.timeProvider === "function"
+          ? this.opts.timeProvider()
+          : Date.now();
       const walRec: any = {
         key: key.toString(),
         value: value.toString(),
@@ -448,7 +466,14 @@ export class Engine {
       await this.wal.append(walRec);
       this.mem.put(key, value, rev);
       try {
-        this.watchManager.publish({ key: key.toString(), value: value.toString(), rev, createdAt: createdAtSingle, leaseId: leaseIdToRecord, leaseExpiresAt });
+        this.watchManager.publish({
+          key: key.toString(),
+          value: value.toString(),
+          rev,
+          createdAt: createdAtSingle,
+          leaseId: leaseIdToRecord,
+          leaseExpiresAt,
+        });
       } catch {}
     } finally {
       unlock();
@@ -506,7 +531,10 @@ export class Engine {
           const unlockAll = await this.acquireKeyLocks(keys);
           try {
             const revs = await this.allocateRevs(keys.length);
-            const nowCreated = typeof this.opts?.timeProvider === "function" ? this.opts.timeProvider() : Date.now();
+            const nowCreated =
+              typeof this.opts?.timeProvider === "function"
+                ? this.opts.timeProvider()
+                : Date.now();
             // For eviction, record lease metadata at the transaction level (not per-op)
             // to avoid replay re-attaching keys after a tombstone. Per-op entries remain
             // deletes (value == null) and rev. The tx carries leaseId/leaseExpiresAt/createdAt.
@@ -526,7 +554,13 @@ export class Engine {
               } catch {}
             }
             // attach tx-level lease metadata for replay and watcher reconstruction
-            await (this as any).wal.append({ tx: true, ops: walOps, leaseId: lid, leaseExpiresAt: l.expiresAt, createdAt: nowCreated });
+            await (this as any).wal.append({
+              tx: true,
+              ops: walOps,
+              leaseId: lid,
+              leaseExpiresAt: l.expiresAt,
+              createdAt: nowCreated,
+            });
             // Ensure WAL is flushed to durable storage before applying memtable deletes
             if (typeof (this as any).wal.flush === "function") {
               try {
@@ -534,7 +568,7 @@ export class Engine {
               } catch (e) {}
             }
             // apply deletes
-              for (let i = 0; i < keys.length; i++) {
+            for (let i = 0; i < keys.length; i++) {
               const k = keys[i];
               const r = revs[i];
               if (!k) continue;
@@ -545,10 +579,17 @@ export class Engine {
               try {
                 this.metrics.leases.evictedKeys += 1;
               } catch (e) {}
-                try {
-                  // publish eviction event including lease metadata so watchers see which lease caused the delete
-                  this.watchManager.publish({ key: k.toString(), value: null, rev: r, createdAt: nowCreated, leaseId: lid, leaseExpiresAt: l.expiresAt });
-                } catch {}
+              try {
+                // publish eviction event including lease metadata so watchers see which lease caused the delete
+                this.watchManager.publish({
+                  key: k.toString(),
+                  value: null,
+                  rev: r,
+                  createdAt: nowCreated,
+                  leaseId: lid,
+                  leaseExpiresAt: l.expiresAt,
+                });
+              } catch {}
             }
             if (debugEvict) {
               try {
@@ -957,44 +998,65 @@ export class Engine {
     // If watch backend has persisted subscribers, ask it for snapshots and
     // perform a targeted WAL replay so restored subscribers can resume.
     try {
-      if (this.watchManager && typeof (this.watchManager as any).exportSnapshots === "function") {
+      if (
+        this.watchManager &&
+        typeof (this.watchManager as any).exportSnapshots === "function"
+      ) {
         const snaps = (this.watchManager as any).exportSnapshots();
         if (Array.isArray(snaps) && snaps.length > 0) {
-            // If application provided a handler registry or factory, attach handlers
-            try {
-              const registry = (this.opts as any)?.watchHandlerRegistry as
-                | Record<number, (ev: any) => void>
-                | undefined;
-              const factory = typeof (this.opts as any)?.watchHandlerFactory === "function"
+          // If application provided a handler registry or factory, attach handlers
+          try {
+            const registry = (this.opts as any)?.watchHandlerRegistry as
+              | Record<number, (ev: any) => void>
+              | undefined;
+            const factory =
+              typeof (this.opts as any)?.watchHandlerFactory === "function"
                 ? (this.opts as any).watchHandlerFactory
                 : undefined;
-              for (const snap of snaps) {
-                try {
-                  let handler: ((ev: any) => void) | undefined = undefined;
-                  if (registry && typeof registry[snap.id] === "function") handler = registry[snap.id];
-                  else if (typeof factory === "function") handler = factory(snap);
-                  if (typeof handler === "function") {
-                    const sub = typeof (this.watchManager as any).getSubscriberById === "function"
+            for (const snap of snaps) {
+              try {
+                let handler: ((ev: any) => void) | undefined = undefined;
+                if (registry && typeof registry[snap.id] === "function")
+                  handler = registry[snap.id];
+                else if (typeof factory === "function") handler = factory(snap);
+                if (typeof handler === "function") {
+                  const sub =
+                    typeof (this.watchManager as any).getSubscriberById ===
+                    "function"
                       ? (this.watchManager as any).getSubscriberById(snap.id)
                       : null;
-                    if (sub && typeof sub.onEvent === "function") {
-                      try {
-                        sub.onEvent(handler as any);
-                      } catch {}
-                    }
+                  if (sub && typeof sub.onEvent === "function") {
+                    try {
+                      sub.onEvent(handler as any);
+                    } catch {}
                   }
-                } catch {}
-              }
-            } catch {}
+                }
+              } catch {}
+            }
+          } catch {}
           // compute minimal lastSeenRev across snapshots to avoid re-sending already-seen events
-          const revs = snaps.map((s: any) => (typeof s.lastSeenRev === "number" ? s.lastSeenRev : undefined)).filter((r: any) => typeof r === "number") as number[];
+          const revs = snaps
+            .map((s: any) =>
+              typeof s.lastSeenRev === "number" ? s.lastSeenRev : undefined
+            )
+            .filter((r: any) => typeof r === "number") as number[];
           const minRev = revs.length ? Math.min(...revs) : undefined;
           // if backend supports replayFromWal prefer that (offset-aware). Otherwise fallback to replayFromScan
           try {
-            if (typeof (this.watchManager as any).replayFromWal === "function") {
-              await (this.watchManager as any).replayFromWal(this.wal, { minRev, minWalOffset: minRequiredWalOffset });
-            } else if (typeof (this.watchManager as any).replayFromScan === "function") {
-              await (this.watchManager as any).replayFromScan((this.wal as any).scan(minRequiredWalOffset), minRev);
+            if (
+              typeof (this.watchManager as any).replayFromWal === "function"
+            ) {
+              await (this.watchManager as any).replayFromWal(this.wal, {
+                minRev,
+                minWalOffset: minRequiredWalOffset,
+              });
+            } else if (
+              typeof (this.watchManager as any).replayFromScan === "function"
+            ) {
+              await (this.watchManager as any).replayFromScan(
+                (this.wal as any).scan(minRequiredWalOffset),
+                minRev
+              );
             }
           } catch (e) {
             // best-effort: if replay fails, continue startup
@@ -1074,15 +1136,29 @@ export class Engine {
           // Transaction record: apply each op in order
           // If tx-level metadata exists (leaseId/leaseExpiresAt/createdAt), propagate
           // that metadata into each op for replay handling and watcher reconstruction.
-          const txLeaseId = typeof entry.leaseId === "number" ? entry.leaseId : undefined;
-          const txLeaseExpiresAt = typeof entry.leaseExpiresAt === "number" ? entry.leaseExpiresAt : undefined;
-          const txCreatedAt = typeof entry.createdAt === "number" ? entry.createdAt : undefined;
+          const txLeaseId =
+            typeof entry.leaseId === "number" ? entry.leaseId : undefined;
+          const txLeaseExpiresAt =
+            typeof entry.leaseExpiresAt === "number"
+              ? entry.leaseExpiresAt
+              : undefined;
+          const txCreatedAt =
+            typeof entry.createdAt === "number" ? entry.createdAt : undefined;
           for (const op of entry.ops) {
             if (!op || !op.key) continue;
             // prefer op-level lease fields if present; otherwise inherit from tx-level
-            if (typeof op.leaseId !== "number" && typeof txLeaseId === "number") op.leaseId = txLeaseId;
-            if (typeof op.leaseExpiresAt !== "number" && typeof txLeaseExpiresAt === "number") op.leaseExpiresAt = txLeaseExpiresAt;
-            if (typeof op.createdAt !== "number" && typeof txCreatedAt === "number") op.createdAt = txCreatedAt;
+            if (typeof op.leaseId !== "number" && typeof txLeaseId === "number")
+              op.leaseId = txLeaseId;
+            if (
+              typeof op.leaseExpiresAt !== "number" &&
+              typeof txLeaseExpiresAt === "number"
+            )
+              op.leaseExpiresAt = txLeaseExpiresAt;
+            if (
+              typeof op.createdAt !== "number" &&
+              typeof txCreatedAt === "number"
+            )
+              op.createdAt = txCreatedAt;
 
             const kbuf = Buffer.from(op.key);
             const rev = typeof op.rev === "number" ? op.rev : undefined;
@@ -1179,7 +1255,10 @@ export class Engine {
           const revs = await self.allocateRevs(ops.length);
 
           // build WAL record with assigned revs
-          const createdAtTx = typeof self.opts?.timeProvider === 'function' ? self.opts.timeProvider() : Date.now();
+          const createdAtTx =
+            typeof self.opts?.timeProvider === "function"
+              ? self.opts.timeProvider()
+              : Date.now();
           const walOps = ops.map((o, i) => ({
             key: o.key.toString(),
             value: o.value === null ? null : o.value.toString(),
@@ -1214,7 +1293,12 @@ export class Engine {
             else self.mem.put(o.key, o.value, r);
             try {
               const v = o.value == null ? null : String(o.value);
-              self.watchManager.publish({ key: o.key.toString(), value: v, rev: r, createdAt: createdAtTx });
+              self.watchManager.publish({
+                key: o.key.toString(),
+                value: v,
+                rev: r,
+                createdAt: createdAtTx,
+              });
             } catch {}
           }
 
@@ -1319,7 +1403,7 @@ export class Engine {
       // Interpret expectedRev: null means key must not exist (currentRev === null)
       const match =
         expectedRev === null ? currentRev === null : currentRev === expectedRev;
-      if (!match) return { ok: false };
+      if (!match) return { ok: false, currentRev };
 
       // allocate new revision and persist via WAL and memtable
       this.revCounter += 1;
