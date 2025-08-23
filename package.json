@@ -8,13 +8,15 @@
     "ci": "node ./scripts/clean_data.cjs && bun test"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/snappyjs": "^0.7.1"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "@faker-js/faker": "^9.9.0",
-    "@msgpack/msgpack": "^2.7.0"
+    "@msgpack/msgpack": "^2.7.0",
+    "snappyjs": "^0.7.0"
   }
 }
