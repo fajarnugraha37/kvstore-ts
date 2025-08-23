@@ -55,6 +55,8 @@ async function bench() {
   );
 
   // Scan benchmark
+  // Ensure any batched writes are flushed before scanning
+  if (typeof (wal as any).flush === "function") await (wal as any).flush();
   const t2 = process.hrtime.bigint();
   let count = 0;
   for await (const _ of wal.scan()) count++;
@@ -73,6 +75,8 @@ async function bench() {
   console.log(
     `append_sec=${appendSec.toFixed(3)} scan_sec=${scanSec.toFixed(3)}`
   );
+
+  if (typeof (wal as any).close === "function") await (wal as any).close();
 
   process.exit(0);
 }

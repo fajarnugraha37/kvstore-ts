@@ -35,4 +35,5 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 libs.bak
 libs/**/*.bak
-data
+data/
+data-*/
