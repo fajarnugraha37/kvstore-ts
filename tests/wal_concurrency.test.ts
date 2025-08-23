@@ -1,8 +1,7 @@
 import { rm, mkdir } from "node:fs/promises";
 import { describe, it, expect } from "bun:test";
 import { Wal } from "../libs/wal/wall";
-
-const fs = require("node:fs");
+import fs from "node:fs";
 
 describe("wal concurrency and crash recovery", () => {
   it("handles concurrent appends correctly", async () => {

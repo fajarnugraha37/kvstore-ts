@@ -1,4 +1,5 @@
 import { rm, mkdir } from "node:fs/promises";
+import fs from "node:fs";
 import { describe, it, expect } from "bun:test";
 import { Wal } from "../libs/wal/wall";
 
@@ -18,7 +19,6 @@ describe("wal layout and reverseScan edge cases", () => {
     if ((wal as any).flush) await (wal as any).flush();
 
     // truncate the file to remove last few bytes (partial trailer)
-    const fs = require("node:fs");
     const p = dir + "/log.wal";
     const st = fs.statSync(p);
     fs.truncateSync(p, st.size - 4);

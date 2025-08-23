@@ -13,15 +13,13 @@ export abstract class WallSched {
     if (this.flushTimer != null) return;
     this.flushTimer = setTimeout(async () => {
       this.flushTimer = null;
+      // await this.writeLock.acquire();
       try {
-        await this.writeLock.acquire();
-        try {
-          await this.flushBatch();
-        } finally {
-          this.writeLock.release();
-        }
+        await this.flushBatch();
       } catch (e) {
         // ignore timer errors
+      } finally {
+        // this.writeLock.release();
       }
     }, this.maxBatchDelayMs);
   }

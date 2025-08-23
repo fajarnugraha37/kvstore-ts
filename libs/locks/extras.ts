@@ -3,16 +3,35 @@ import { isSemaphore } from "./helper";
 import type { MutexInterface } from "./mutex.types";
 import type { SemaphoreInterface } from "./semaphore.types";
 
+/**
+ * Create a mutex with a timeout.
+ * @param mutex The mutex to wrap.
+ * @param timeout The timeout duration.
+ * @param timeoutError The error to throw on timeout.
+ */
 export function withTimeout(
   mutex: MutexInterface,
   timeout: number,
   timeoutError?: Error
 ): MutexInterface;
+/**
+ * Create a semaphore with a timeout.
+ * @param semaphore The semaphore to wrap.
+ * @param timeout The timeout duration.
+ * @param timeoutError The error to throw on timeout.
+ */
 export function withTimeout(
   semaphore: SemaphoreInterface,
   timeout: number,
   timeoutError?: Error
 ): SemaphoreInterface;
+/**
+ * Create a synchronization primitive with a timeout.
+ * @param sync The synchronization primitive to wrap.
+ * @param timeout The timeout duration.
+ * @param timeoutError The error to throw on timeout.
+ * @returns A new synchronization primitive that rejects with a timeout error.
+ */
 export function withTimeout(
   sync: MutexInterface | SemaphoreInterface,
   timeout: number,
@@ -133,14 +152,30 @@ export function withTimeout(
   };
 }
 
+/**
+ * Try to acquire a mutex.
+ * @param mutex The mutex to acquire.
+ * @param alreadyAcquiredError The error to throw if the mutex is already acquired.
+ */
 export function tryAcquire(
   mutex: MutexInterface,
   alreadyAcquiredError?: Error
 ): MutexInterface;
+/**
+ * Try to acquire a semaphore.
+ * @param semaphore The semaphore to acquire.
+ * @param alreadyAcquiredError The error to throw if the semaphore is already acquired.
+ */
 export function tryAcquire(
   semaphore: SemaphoreInterface,
   alreadyAcquiredError?: Error
 ): SemaphoreInterface;
+/**
+ * Try to acquire a synchronization primitive.
+ * @param sync The synchronization primitive to acquire.
+ * @param alreadyAcquiredError The error to throw if the primitive is already acquired.
+ * @returns The acquired synchronization primitive.
+ */
 // eslint-disable-next-lisne @typescript-eslint/explicit-module-boundary-types
 export function tryAcquire(
   sync: MutexInterface | SemaphoreInterface,

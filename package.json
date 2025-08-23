@@ -3,7 +3,9 @@
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
-    "test": "bun test"
+    "test": "node ./scripts/clean_data.cjs && bun test",
+    "bench": "node ./scripts/clean_data.cjs && bun run ./bench/compaction_bench.ts",
+    "ci": "node ./scripts/clean_data.cjs && bun test"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -5,3 +5,4 @@ export * from "./file";
 export * from "./fs";
 export * from "./glob";
 export * from "./indexing";
+export * from "./mixins";

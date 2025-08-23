@@ -1,6 +1,6 @@
 import { rm, mkdir } from "node:fs/promises";
 import { encode as msgpackEncode } from "@msgpack/msgpack";
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync, writeSync } from "node:fs";
 
 const ITER = Number(process.argv[2]) || 10000;
 const PAYLOAD = Number(process.argv[3]) || 256;
@@ -36,15 +36,15 @@ async function bench() {
 
   // write using writev (many small writes) via fs.writeSync
   const t4 = process.hrtime.bigint();
-  const fd = require("node:fs").openSync("tmp_writev_js.bin", "w");
-  for (const b of jsBufs) require("node:fs").writeSync(fd, b);
-  require("node:fs").closeSync(fd);
+  const fd = openSync("tmp_writev_js.bin", "w");
+  for (const b of jsBufs) writeSync(fd, b);
+  closeSync(fd);
   const t5 = process.hrtime.bigint();
 
   const t6 = process.hrtime.bigint();
-  const fd2 = require("node:fs").openSync("tmp_writev_mp.bin", "w");
-  for (const b of mpBufs) require("node:fs").writeSync(fd2, b);
-  require("node:fs").closeSync(fd2);
+  const fd2 = openSync("tmp_writev_mp.bin", "w");
+  for (const b of mpBufs) writeSync(fd2, b);
+  closeSync(fd2);
   const t7 = process.hrtime.bigint();
 
   console.log("writeSync many JS writes:", hrSec(t4,t5));
