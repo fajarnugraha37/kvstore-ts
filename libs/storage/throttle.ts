@@ -47,5 +47,3 @@ export function __setMaybeConsumeForTests(fn: MaybeConsumeSig | null) {
   if (fn) _impl = fn;
   else _impl = _defaultImpl;
 }
-
-export default { maybeConsumePerEntry, __setMaybeConsumeForTests };

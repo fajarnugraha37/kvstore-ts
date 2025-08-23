@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import Manifest from "../libs/storage/manifest";
-import Compactor from "../libs/storage/compactor";
+import { Manifest } from "../libs/storage/manifest";
+import { Compactor } from "../libs/storage/compactor";
 import { existsSync, unlinkSync } from "node:fs";
 import { SSTWriter } from "../libs/storage";
 

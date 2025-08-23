@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
-const makeTempDir = require("./util/tmpdir");
 import fs from "fs";
-import Engine from "../libs/storage/engine";
-import Manifest from "../libs/storage/manifest";
+import { Engine } from "../libs/storage/engine";
+import { Manifest } from "../libs/storage/manifest";
+const makeTempDir = require("./util/tmpdir");
 
 // This test ensures that legacy manifests without createdAt are handled conservatively
 // and that newly written SSTs receive createdAt via engine timeProvider when present.

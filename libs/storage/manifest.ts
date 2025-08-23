@@ -148,5 +148,3 @@ export class Manifest {
     }
   }
 }
-
-export default Manifest;

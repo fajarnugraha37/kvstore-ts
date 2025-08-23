@@ -1,9 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
-import Manifest from "../libs/storage/manifest";
-import Compactor from "../libs/storage/compactor";
-const makeTempDir = require("./util/tmpdir");
+import { Manifest } from "../libs/storage/manifest";
+import { Compactor } from "../libs/storage/compactor";
 import { existsSync, unlinkSync } from "node:fs";
+const makeTempDir = require("./util/tmpdir");
 
 describe("compactor output splitting", () => {
   it("splits merged output into multiple SSTs when maxSstSize is small", async () => {

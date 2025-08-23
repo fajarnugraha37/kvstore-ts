@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
-import Memtable from "../libs/storage/memtable";
+import { MemTable } from "../libs/storage/memtable";
 
 describe("engine flush backpressure", () => {
   it("put blocks when memtable exceeds limit (flush is synchronous)", async () => {
@@ -12,7 +12,7 @@ describe("engine flush backpressure", () => {
       await e.open();
       // set small memtable limit via internal constructor param (approxLimit default is 64KB)
       // hack: set internal approx limit low for test
-      (e as any).mem = new Memtable(128); // 128 bytes limit
+      (e as any).mem = new MemTable(128); // 128 bytes limit
 
       const big = Buffer.alloc(200, "a");
       const start = Date.now();

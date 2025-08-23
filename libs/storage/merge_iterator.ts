@@ -81,5 +81,3 @@ export async function* kWayMerge(
     }
   }
 }
-
-export default kWayMerge;

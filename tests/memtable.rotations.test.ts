@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import MemTable from "../libs/storage/memtable";
+import { MemTable } from "../libs/storage/memtable";
 import { getHeight, getRootKey } from "./testutils/memtable.testutils";
 
 function keysToStrings(m: MemTable) {

@@ -2,11 +2,11 @@ import fs, { existsSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { prefixEndExclusive } from "../utils";
 import { HandoffWal, Wal, type WalLike } from "../wal";
-import MemTable from "./memtable";
-import Manifest from "./manifest";
+import { MemTable } from "./memtable";
+import { Manifest } from "./manifest";
 import { kWayMerge } from "./merge_iterator";
 import { cleanupDeleteMarkers } from "./file_refcount";
-import Compactor from "./compactor";
+import { Compactor } from "./compactor";
 import type { CompactorOptions } from "./compactor";
 import { SSTReader } from "./sstreader";
 import { SSTWriter } from "./sstwriter";
@@ -1027,5 +1027,3 @@ export class Engine {
     return max;
   }
 }
-
-export default Engine;

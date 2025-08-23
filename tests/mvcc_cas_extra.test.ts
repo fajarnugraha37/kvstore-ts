@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-const makeTempDir = require("./util/tmpdir");
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
+const makeTempDir = require("./util/tmpdir");
 
 describe("MVCC & CAS extra tests", () => {
   it("concurrent CAS stress: many concurrent CAS attempts serialize and one wins", async () => {

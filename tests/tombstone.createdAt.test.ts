@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import Manifest from "../libs/storage/manifest";
+import { Manifest } from "../libs/storage/manifest";
 import { SSTWriter } from "../libs/storage/sstwriter";
-import Compactor from "../libs/storage/compactor";
+import { Compactor } from "../libs/storage/compactor";
 import { SSTReader } from "../libs/storage/sstreader";
 
 const makeTempDir = require("./util/tmpdir");

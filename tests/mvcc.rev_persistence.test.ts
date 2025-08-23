@@ -1,9 +1,9 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
-const makeTempDir = require("./util/tmpdir");
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { SSTReader } from "../libs/storage";
+const makeTempDir = require("./util/tmpdir");
 
 describe("mvcc revision persistence", () => {
   it("writes revisions to SST and preserves highest revision after compaction/recovery", async () => {

@@ -1,7 +1,7 @@
 import { test } from "bun:test";
 import { strict as assert } from "assert";
 import { SSTWriter } from "../libs/storage/sstwriter";
-import Manifest from "../libs/storage/manifest";
+import { Manifest } from "../libs/storage/manifest";
 import fs from "fs";
 import path from "path";
 

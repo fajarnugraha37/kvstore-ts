@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import MemTable from "../libs/storage/memtable";
+import { MemTable } from "../libs/storage/memtable";
 
 describe("memtable basic", () => {
   it("put/get and iterator", async () => {

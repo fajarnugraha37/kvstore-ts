@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 const makeTempDir = require("./util/tmpdir");
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
 
 // This test verifies that when multiple SSTs contain different revisions for the

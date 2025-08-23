@@ -1,4 +1,4 @@
-import MemTable from "../../libs/storage/memtable";
+import { MemTable } from "../../libs/storage/memtable";
 
 // Test-only utilities for inspecting a MemTable's structure.
 // These functions are intentionally kept in tests/ to avoid exporting internals to production code.

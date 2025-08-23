@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { existsSync, unlinkSync, statSync } from "node:fs";
 import * as sstable from "../libs/storage/sstable";
 

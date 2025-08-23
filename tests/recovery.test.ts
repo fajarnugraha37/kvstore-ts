@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
 import fs, { unlinkSync, existsSync, statSync } from "node:fs";
 import os from "node:os";

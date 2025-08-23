@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
-import Compactor from "../libs/storage/compactor";
-import Manifest from "../libs/storage/manifest";
+import { Compactor } from "../libs/storage/compactor";
+import { Manifest } from "../libs/storage/manifest";
 import { existsSync, rmdirSync, mkdirSync } from "node:fs";
 
 describe("smoke: compactor level-target default", () => {

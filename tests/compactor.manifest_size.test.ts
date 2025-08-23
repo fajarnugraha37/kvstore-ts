@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
-import Manifest from "../libs/storage/manifest";
-import Engine from "../libs/storage/engine";
+import { Manifest } from "../libs/storage/manifest";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
-const makeTempDir = require("./util/tmpdir");
 import { existsSync, statSync } from "node:fs";
+const makeTempDir = require("./util/tmpdir");
 
 describe("compactor manifest size fidelity", () => {
   it("writes manifest.size equal to on-disk file sizes for compacted outputs", async () => {

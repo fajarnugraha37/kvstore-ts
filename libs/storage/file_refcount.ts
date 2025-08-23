@@ -198,5 +198,3 @@ export function cleanupDeleteMarkers(
 export function refCount(path: string) {
   return counts.get(path) || 0;
 }
-
-export default { acquire, release, requestDelete, refCount };

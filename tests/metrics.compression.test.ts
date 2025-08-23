@@ -1,9 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
 import * as sstable from "../libs/storage/sstable";
-import Compactor from "../libs/storage/compactor";
-import Manifest from "../libs/storage/manifest";
-import { existsSync, unlinkSync, mkdirSync, rmdirSync } from "node:fs";
+import { Compactor } from "../libs/storage/compactor";
+import { Manifest } from "../libs/storage/manifest";
+import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 
 describe("metrics: compaction/compression", () => {
   it("compactor returns compression stats after compacting SSTs", async () => {

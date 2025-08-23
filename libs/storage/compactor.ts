@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import Manifest from "./manifest";
+import { Manifest } from "./manifest";
 import { varintLen } from "./helper";
 import { requestDelete } from "./file_refcount";
 import { kWayMerge } from "./merge_iterator";
@@ -1154,5 +1154,3 @@ export class Compactor {
     };
   }
 }
-
-export default Compactor;

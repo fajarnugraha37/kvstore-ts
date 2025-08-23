@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { strict as assert } from "assert";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 
 // This test verifies that when a WAL implementation exposes a flush()
 // method, Engine.flush() awaits it before updating the manifest walOffset.

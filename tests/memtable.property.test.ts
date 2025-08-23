@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import MemTable from "../libs/storage/memtable";
+import { MemTable } from "../libs/storage/memtable";
 
 // Property-based randomized tests for AVL invariants.
 // We will run many random sequences of puts/deletes and then check:

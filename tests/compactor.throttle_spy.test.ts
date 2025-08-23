@@ -1,9 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage/sstwriter";
-import Manifest from "../libs/storage/manifest";
-import Compactor from "../libs/storage/compactor";
+import { Manifest } from "../libs/storage/manifest";
+import { Compactor } from "../libs/storage/compactor";
 import { existsSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname } from "node:path";
 
 // This test spies on throttle.maybeConsumePerEntry by replacing it with a fast no-op spy
 // so we can assert that compaction calls it without incurring real sleeps.

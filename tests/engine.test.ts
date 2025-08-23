@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
-const makeTempDir = require("./util/tmpdir");
+import { Engine } from "../libs/storage/engine";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { withWalImpls } from "./util/engine_test_runner";
+const makeTempDir = require("./util/tmpdir");
 
 describe("engine integration", () => {
   it("replay wal and flush to sst", async () => {

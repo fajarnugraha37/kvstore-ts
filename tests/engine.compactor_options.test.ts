@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import Engine from "../libs/storage/engine";
+import { Engine } from "../libs/storage/engine";
 import { withWalImpls } from "./util/engine_test_runner";
-import Manifest from "../libs/storage/manifest";
+import { Manifest } from "../libs/storage/manifest";
 const makeTempDir = require("./util/tmpdir");
 
 describe("engine compactor options", () => {

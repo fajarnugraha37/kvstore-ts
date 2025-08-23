@@ -12,7 +12,7 @@ const helperScript = `
 import fs from 'fs';
 import path from 'path';
 import { SSTWriter } from './libs/storage/sstwriter';
-import Manifest from './libs/storage/manifest';
+import { Manifest } from './libs/storage/manifest';
 const dir = process.argv[2];
 try { fs.mkdirSync(dir, { recursive: true }); } catch(e) {}
 const tmp = path.join(dir, 'child.tmp');
