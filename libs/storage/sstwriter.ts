@@ -33,7 +33,15 @@ import {
   writeUint64,
   fnv1a,
 } from "./helper";
-import { SST_FOOTER_LEN, SST_HEADER_LEN, type FileMeta } from "./sstable";
+import {
+  BLOCK_COMPRESSED_FLAG,
+  compressBlock,
+  COMPRESSION_DEFLATE,
+  DEFAULT_COMPRESSION_THRESHOLD,
+  SST_FOOTER_LEN,
+  SST_HEADER_LEN,
+  type FileMeta,
+} from "./sstable";
 
 export type SSTWriterOptions = {
   blockSize?: number;
@@ -91,7 +99,9 @@ export class SSTWriter {
     const vlen = writeUint32(v ? v.length : 0xffffffff);
     const revBuf = varintEncode(rev ?? 0);
     const walBuf = varintEncode(typeof walOffset === "number" ? walOffset : 0);
-    const createdBuf = varintEncode(typeof createdAt === "number" ? createdAt : 0);
+    const createdBuf = varintEncode(
+      typeof createdAt === "number" ? createdAt : 0
+    );
     const entry = v
       ? Buffer.concat([klen, k, vlen, v, revBuf, walBuf, createdBuf])
       : Buffer.concat([klen, k, vlen, revBuf, walBuf, createdBuf]);
@@ -152,11 +162,11 @@ export class SSTWriter {
 
     const klen = 4 + key.length; // u32 + key
     const vlen = value === null ? 4 : 4 + value.length; // u32 + value (or 0xffffffff)
-  const revLen = typeof rev === "number" ? varintLen(rev) : 10; // exact if known, else worst-case
-  // include conservative sizes for walOffset and createdAt varints
-  const walLen = 1;
-  const createdLen = 1;
-  const entryLen = klen + vlen + revLen + walLen + createdLen;
+    const revLen = typeof rev === "number" ? varintLen(rev) : 10; // exact if known, else worst-case
+    // include conservative sizes for walOffset and createdAt varints
+    const walLen = 1;
+    const createdLen = 1;
+    const entryLen = klen + vlen + revLen + walLen + createdLen;
 
     // if adding would overflow current block and current block not empty, it will be flushed
     if (projCurLen + entryLen > this.blockSize && projCurEntries > 0) {
@@ -238,10 +248,10 @@ export class SSTWriter {
     // compute entry encoding length
     const klen = 4 + key.length;
     const vlen = value === null ? 4 : 4 + value.length;
-  const revLen = typeof rev === "number" ? varintLen(rev) : 10;
-  const walLen = 1;
-  const createdLen = 1;
-  const entryLen = klen + vlen + revLen + walLen + createdLen; // exact if rev provided
+    const revLen = typeof rev === "number" ? varintLen(rev) : 10;
+    const walLen = 1;
+    const createdLen = 1;
+    const entryLen = klen + vlen + revLen + walLen + createdLen; // exact if rev provided
 
     // if current block empty, adding will add entryLen to current block plus possibly index/footer growth later
     // if current block has some content, adding may either fit or cause a flush then start a new block
@@ -271,10 +281,10 @@ export class SSTWriter {
 
     const klen = 4 + key.length;
     const vlen = value === null ? 4 : 4 + value.length;
-  const revLen = typeof rev === "number" ? varintLen(rev) : 10;
-  const walLen = 1;
-  const createdLen = 1;
-  const entryLen = klen + vlen + revLen + walLen + createdLen; // conservative varint max len unless rev known
+    const revLen = typeof rev === "number" ? varintLen(rev) : 10;
+    const walLen = 1;
+    const createdLen = 1;
+    const entryLen = klen + vlen + revLen + walLen + createdLen; // conservative varint max len unless rev known
 
     // if adding would overflow current block and current block not empty, it will be flushed
     if (projCurLen + entryLen > this.blockSize && projCurEntries > 0) {
@@ -417,13 +427,15 @@ export class SSTWriter {
     // ensure current block is flushed into blocks
     if (this.curEntries.length > 0) this.flushCurrentBlock();
 
-  const blocksBufs: Buffer[] = [];
-  const firstKeys: Buffer[] = [];
-  const storedLens: number[] = [];
+    const blocksBufs: Buffer[] = [];
+    const firstKeys: Buffer[] = [];
+    const storedLens: number[] = [];
     let off = BigInt(SST_HEADER_LEN); // header length
     const compression = this.opts.compressionAlgo ?? 0;
-  const compressionThreshold = this.opts.compressionThreshold ?? require('./sstable').DEFAULT_COMPRESSION_THRESHOLD;
-  for (const b of this.blocks) {
+    const compressionThreshold =
+      this.opts.compressionThreshold ??
+      DEFAULT_COMPRESSION_THRESHOLD;
+    for (const b of this.blocks) {
       // build block buffer: count + entries
       const countBuf = writeUint32(b.entries.length);
       const rawBlock = Buffer.concat([countBuf, ...b.entries]);
@@ -436,27 +448,24 @@ export class SSTWriter {
       }
       // apply compression using helper from sstable.ts if available
       try {
-        // require dynamically to avoid top-level circular import
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const sstable = require('./sstable');
-        if (compression && sstable.COMPRESSION_DEFLATE) {
-          const compressed = sstable.compressBlock(rawBlock, compression);
+        if (compression && COMPRESSION_DEFLATE) {
+          const compressed = compressBlock(rawBlock, compression);
           if (compressed.length < rawBlock.length) {
-            blockBuf = compressed;
+            blockBuf = compressed as Buffer<ArrayBuffer>;
             // avoid JS bitwise signed-int behavior; use addition to set high bit in unsigned space
-            storedLen = compressed.length + sstable.BLOCK_COMPRESSED_FLAG;
+            storedLen = compressed.length + BLOCK_COMPRESSED_FLAG;
           }
         }
       } catch (e) {}
 
-  blocksBufs.push(blockBuf);
-  // store the on-disk stored length (with compressed flag if set)
-  storedLens.push(storedLen);
-  // note: index stores original firstKey (uncompressed)
-  firstKeys.push(b.firstKey ?? Buffer.alloc(0));
+      blocksBufs.push(blockBuf);
+      // store the on-disk stored length (with compressed flag if set)
+      storedLens.push(storedLen);
+      // note: index stores original firstKey (uncompressed)
+      firstKeys.push(b.firstKey ?? Buffer.alloc(0));
     }
 
-  const header = Buffer.concat([Buffer.from("SST1"), Buffer.from([3])]); // version 3: rev + walOffset + createdAt
+    const header = Buffer.concat([Buffer.from("SST1"), Buffer.from([3])]); // version 3: rev + walOffset + createdAt
     const offsets: bigint[] = [];
     const lens: number[] = [];
     const cks: number[] = [];

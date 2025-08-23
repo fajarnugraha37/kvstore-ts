@@ -5,6 +5,7 @@ import { requestDelete } from "./file_refcount";
 import { kWayMerge } from "./merge_iterator";
 import { SSTReader } from "./sstreader";
 import { SSTWriter } from "./sstwriter";
+import { maybeConsumePerEntry } from "./throttle";
 
 /**
  * Simple compactor: given a Manifest, pick all files, merge their entries and write a single new SST,
@@ -283,6 +284,9 @@ export class Compactor {
             skipTombstone = false;
             // write tombstone as-is; preserve source walOffset/createdAt if available else use now
             const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            // throttle per-entry based on estimated bytes that will be appended
+            // per-entry throttling
+            await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
             curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
             approxSize += entrySize;
             processed += 1;
@@ -319,6 +323,9 @@ export class Compactor {
                     try { console.error('[compactor-debug] promoting best candidate key=%s rev=%s val=%s', key && key.toString ? key.toString() : '<nil>', String(bestCand.rev), bestCand.value && bestCand.value.toString ? bestCand.value.toString() : '<nil>'); } catch (e) {}
                   }
                   const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+                  // per-entry token-bucket throttling for promoted candidates
+                  // per-entry throttling for promoted candidates
+                  await maybeConsumePerEntry(tokenBucket, curWriter, key, bestCand.value, bestCand.rev);
                   curWriter!.add(key, bestCand.value, bestCand.rev, (bestCand as any).walOffsetSrc, entryCreated);
                   promoted = true;
                 }
@@ -328,6 +335,8 @@ export class Compactor {
           }
           if (!skipTombstone) {
             const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            // per-entry throttling
+            await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
             curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
           }
           approxSize += entrySize;
@@ -498,6 +507,8 @@ export class Compactor {
             // preserve for active snapshot
             skipTombstone = false;
             const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            // per-entry throttling
+            await maybeConsumePerEntry(tokenBucket, curWriter, key, val, e.rev);
             curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
             approxSize += entrySize;
             continue;
@@ -513,6 +524,15 @@ export class Compactor {
           }
           if (!skipTombstone) {
             const entryCreated = typeof this.opts.timeProvider === 'function' ? this.opts.timeProvider() : nowMs;
+            if (tokenBucket) {
+              try {
+                const delta =
+                  typeof (curWriter as any).deltaSizeForEntry === "function"
+                    ? (curWriter as any).deltaSizeForEntry(key, val, e.rev)
+                    : (key?.length || 0) + (val ? val.length : 0) + 10;
+                if (delta > 0) await tokenBucket.consume(delta);
+              } catch (e) {}
+            }
             curWriter!.add(key, val, e.rev, (e as any).walOffsetSrc, entryCreated);
           }
           approxSize += entrySize;

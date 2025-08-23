@@ -20,7 +20,13 @@ import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 import { acquire, release } from "./file_refcount";
 import { crc32c } from "../utils";
 import { writeUint32, writeUint64, fnv1a, varintDecode } from "./helper";
-import { SST_HEADER_LEN, SST_HEADER_MAGIC, sstableDebug } from "./sstable";
+import {
+  BLOCK_COMPRESSED_FLAG,
+  decompressBlock,
+  SST_HEADER_LEN,
+  SST_HEADER_MAGIC,
+  sstableDebug,
+} from "./sstable";
 
 export class SSTReader {
   private index: Array<{
@@ -167,15 +173,15 @@ export class SSTReader {
       const offset = Number(ent.offset);
       const blen = ent.blockLen;
       if (sstableDebug.enabled) sstableDebug.blockReads++;
-  // handle possible per-block compression flag in stored block length
-  const storedLen = blen >>> 0;
-  const compressed = (storedLen & require('./sstable').BLOCK_COMPRESSED_FLAG) !== 0;
-  const onDiskLen = storedLen & ~require('./sstable').BLOCK_COMPRESSED_FLAG;
-  const storedBuf = Buffer.alloc(onDiskLen);
-  readSync(fd, storedBuf, 0, onDiskLen, offset);
-  const cks = crc32c(storedBuf);
-  if (cks !== ent.blockCks) throw new Error("sst: block checksum mismatch");
-  const bbuf = compressed ? require('./sstable').decompressBlock(storedBuf) : storedBuf;
+      // handle possible per-block compression flag in stored block length
+      const storedLen = blen >>> 0;
+      const compressed = (storedLen & BLOCK_COMPRESSED_FLAG) !== 0;
+      const onDiskLen = storedLen & ~BLOCK_COMPRESSED_FLAG;
+      const storedBuf = Buffer.alloc(onDiskLen);
+      readSync(fd, storedBuf, 0, onDiskLen, offset);
+      const cks = crc32c(storedBuf);
+      if (cks !== ent.blockCks) throw new Error("sst: block checksum mismatch");
+      const bbuf = compressed ? decompressBlock(storedBuf) : storedBuf;
       let pos = 0;
       const num = bbuf.readUInt32BE(pos);
       pos += 4;
@@ -239,7 +245,12 @@ export class SSTReader {
   }
 
   // Read a key and return both value and revision (rev may be undefined for older files)
-  getWithRev(key: Buffer): { value: Buffer | null; rev?: number; walOffset?: number; createdAt?: number } {
+  getWithRev(key: Buffer): {
+    value: Buffer | null;
+    rev?: number;
+    walOffset?: number;
+    createdAt?: number;
+  } {
     if (!this.possiblyContains(key)) return { value: null };
     const fd = openSync(this.path, "r");
     try {
@@ -265,14 +276,14 @@ export class SSTReader {
       const offset = Number(ent.offset);
       const blen = ent.blockLen;
       if (sstableDebug.enabled) sstableDebug.blockReads++;
-  const storedLen = blen >>> 0;
-  const compressed = (storedLen & require('./sstable').BLOCK_COMPRESSED_FLAG) !== 0;
-  const onDiskLen = storedLen & ~require('./sstable').BLOCK_COMPRESSED_FLAG;
-  const storedBuf = Buffer.alloc(onDiskLen);
-  readSync(fd, storedBuf, 0, onDiskLen, offset);
-  const cks = crc32c(storedBuf);
-  if (cks !== ent.blockCks) throw new Error("sst: block checksum mismatch");
-  const bbuf = compressed ? require('./sstable').decompressBlock(storedBuf) : storedBuf;
+      const storedLen = blen >>> 0;
+      const compressed = (storedLen & BLOCK_COMPRESSED_FLAG) !== 0;
+      const onDiskLen = storedLen & ~BLOCK_COMPRESSED_FLAG;
+      const storedBuf = Buffer.alloc(onDiskLen);
+      readSync(fd, storedBuf, 0, onDiskLen, offset);
+      const cks = crc32c(storedBuf);
+      if (cks !== ent.blockCks) throw new Error("sst: block checksum mismatch");
+      const bbuf = compressed ? decompressBlock(storedBuf) : storedBuf;
       let pos = 0;
       const num = bbuf.readUInt32BE(pos);
       pos += 4;
@@ -297,7 +308,12 @@ export class SSTReader {
                 pos += w.length;
                 const c = varintDecode(bbuf, pos);
                 pos += c.length;
-                return { value: null, rev: dec.value, walOffset: w.value, createdAt: c.value };
+                return {
+                  value: null,
+                  rev: dec.value,
+                  walOffset: w.value,
+                  createdAt: c.value,
+                };
               }
               return { value: null, rev: dec.value };
             }
@@ -315,7 +331,12 @@ export class SSTReader {
               pos += w.length;
               const c = varintDecode(bbuf, pos);
               pos += c.length;
-              return { value: v, rev: dec2.value, walOffset: w.value, createdAt: c.value };
+              return {
+                value: v,
+                rev: dec2.value,
+                walOffset: w.value,
+                createdAt: c.value,
+              };
             }
             return { value: v, rev: dec2.value };
           }
@@ -349,14 +370,15 @@ export class SSTReader {
     try {
       for (const blk of this.index) {
         const offset = Number(blk.offset);
-  const blen = blk.blockLen >>> 0;
-  const compressed = (blen & require('./sstable').BLOCK_COMPRESSED_FLAG) !== 0;
-  const onDiskLen = blen & ~require('./sstable').BLOCK_COMPRESSED_FLAG;
-  const storedBuf = Buffer.alloc(onDiskLen);
-  readSync(fd, storedBuf, 0, onDiskLen, offset);
-  const cks = crc32c(storedBuf);
-  if (cks !== blk.blockCks) throw new Error("sst: block checksum mismatch");
-  const bbuf = compressed ? require('./sstable').decompressBlock(storedBuf) : storedBuf;
+        const blen = blk.blockLen >>> 0;
+        const compressed = (blen & BLOCK_COMPRESSED_FLAG) !== 0;
+        const onDiskLen = blen & ~BLOCK_COMPRESSED_FLAG;
+        const storedBuf = Buffer.alloc(onDiskLen);
+        readSync(fd, storedBuf, 0, onDiskLen, offset);
+        const cks = crc32c(storedBuf);
+        if (cks !== blk.blockCks)
+          throw new Error("sst: block checksum mismatch");
+        const bbuf = compressed ? decompressBlock(storedBuf) : storedBuf;
         let pos = 0;
         const num = bbuf.readUInt32BE(pos);
         pos += 4;
@@ -380,7 +402,13 @@ export class SSTReader {
                 pos += w.length;
                 const c = varintDecode(bbuf, pos);
                 pos += c.length;
-                yield { key: kbuf, value: null, rev: dec.value, walOffset: w.value, createdAt: c.value };
+                yield {
+                  key: kbuf,
+                  value: null,
+                  rev: dec.value,
+                  walOffset: w.value,
+                  createdAt: c.value,
+                };
               } else {
                 yield { key: kbuf, value: null, rev: dec.value };
               }
@@ -400,7 +428,13 @@ export class SSTReader {
                 pos += w.length;
                 const c = varintDecode(bbuf, pos);
                 pos += c.length;
-                yield { key: kbuf, value: v, rev: dec2.value, walOffset: w.value, createdAt: c.value };
+                yield {
+                  key: kbuf,
+                  value: v,
+                  rev: dec2.value,
+                  walOffset: w.value,
+                  createdAt: c.value,
+                };
               } else {
                 yield { key: kbuf, value: v, rev: dec2.value };
               }
@@ -422,7 +456,13 @@ export class SSTReader {
   async *iteratorRange(
     start?: Buffer,
     end?: Buffer
-  ): AsyncGenerator<{ key: Buffer; value: Buffer | null; rev?: number; walOffset?: number; createdAt?: number }> {
+  ): AsyncGenerator<{
+    key: Buffer;
+    value: Buffer | null;
+    rev?: number;
+    walOffset?: number;
+    createdAt?: number;
+  }> {
     acquire(this.path);
     const fd = openSync(this.path, "r");
     try {
@@ -452,7 +492,8 @@ export class SSTReader {
         const bbuf = Buffer.alloc(blen);
         readSync(fd, bbuf, 0, blen, offset);
         const cks = crc32c(bbuf);
-        if (cks !== blk.blockCks) throw new Error("sst: block checksum mismatch");
+        if (cks !== blk.blockCks)
+          throw new Error("sst: block checksum mismatch");
         let pos = 0;
         const num = bbuf.readUInt32BE(pos);
         pos += 4;
@@ -495,7 +536,13 @@ export class SSTReader {
                 pos += w.length;
                 const c = varintDecode(bbuf, pos);
                 pos += c.length;
-                yield { key: kbuf, value: null, rev: dec.value, walOffset: w.value, createdAt: c.value };
+                yield {
+                  key: kbuf,
+                  value: null,
+                  rev: dec.value,
+                  walOffset: w.value,
+                  createdAt: c.value,
+                };
               } else {
                 yield { key: kbuf, value: null, rev: dec.value };
               }
@@ -515,7 +562,13 @@ export class SSTReader {
                 pos += w.length;
                 const c = varintDecode(bbuf, pos);
                 pos += c.length;
-                yield { key: kbuf, value: v, rev: dec2.value, walOffset: w.value, createdAt: c.value };
+                yield {
+                  key: kbuf,
+                  value: v,
+                  rev: dec2.value,
+                  walOffset: w.value,
+                  createdAt: c.value,
+                };
               } else {
                 yield { key: kbuf, value: v, rev: dec2.value };
               }
