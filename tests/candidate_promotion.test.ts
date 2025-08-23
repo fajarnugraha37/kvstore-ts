@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 const makeTempDir = require("./util/tmpdir");
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 
 // This test verifies that when multiple SSTs contain different revisions for the
 // same key and a tombstone becomes eligible for TTL-based removal, the compactor
@@ -12,11 +13,13 @@ describe("Compactor candidate promotion", () => {
     // deterministically control time so TTL behaviors are reproducible
     let now = Date.now();
     const tp = () => now;
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { tombstoneRetentionMs: 1 },
-      timeProvider: tp,
-    });
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { tombstoneRetentionMs: 1 },
+        timeProvider: tp,
+      });
+      await e.open();
 
     const k = Buffer.from("cand");
     // produce multiple SSTs each containing a different revision
@@ -37,6 +40,7 @@ describe("Compactor candidate promotion", () => {
     await e.compactNow();
     const latest = e.get(k);
     expect(latest && latest.toString()).toBe("v2");
-    await e.close();
+      await e.close();
+    });
   });
 });

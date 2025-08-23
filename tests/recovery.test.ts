@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 import fs, { unlinkSync, existsSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,8 +24,9 @@ describe("recovery tests", () => {
         unlinkSync(`${dir}/manifest.json`);
     } catch {}
 
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     // put some entries and flush to create an SST
     await e.put(Buffer.from("k1"), Buffer.from("v1"));
@@ -67,13 +69,17 @@ describe("recovery tests", () => {
         console.log("--- END DEBUG ---");
       } catch (e) {}
     }
-    const e2 = new Engine(dir, "log.wal");
-    await e2.open();
+  const e2 = new Engine(dir, "log.wal", { walImpl: impl });
+  await e2.open();
 
     // k1 and k2 should be available via WAL replay
     const v1 = e2.get(Buffer.from("k1"));
     const v2 = e2.get(Buffer.from("k2"));
     expect(v1?.toString()).toBe("v1");
     expect(v2?.toString()).toBe("v2");
+      // close engines if present
+      if ((e as any).close) await (e as any).close();
+      if ((e2 as any).close) await (e2 as any).close();
+    });
   });
 });

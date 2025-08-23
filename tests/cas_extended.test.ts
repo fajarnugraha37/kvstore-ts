@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 import { SSTWriter } from "../libs/storage/sstwriter";
 import { SSTReader } from "../libs/storage/sstreader";
 import fs from "node:fs";
@@ -9,28 +10,31 @@ const makeTempDir = require("./util/tmpdir");
 describe("CAS extended tests", () => {
   it("restart-durability: CAS success persisted across reopen", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     const k = Buffer.from("dur");
     const res = await (e as any).cas(k, null, Buffer.from("v1"));
     expect(res.ok).toBe(true);
     const rev = res.rev as number;
-    await e.close();
+      await e.close();
 
-    const e2 = new Engine(dir, "log.wal");
-    await e2.open();
-    const v = e2.get(k);
-    expect(v && v.toString()).toBe("v1");
-    // ensure revision seen on reopen is at least the assigned rev
-    // read via memtable/SSTs not exposing rev easily here; ensure value persisted is main criterion
-    await e2.close();
+      const e2 = new Engine(dir, "log.wal", { walImpl: impl });
+      await e2.open();
+      const v = e2.get(k);
+      expect(v && v.toString()).toBe("v1");
+      // ensure revision seen on reopen is at least the assigned rev
+      // read via memtable/SSTs not exposing rev easily here; ensure value persisted is main criterion
+      await e2.close();
+    });
   });
 
   it("numeric expectedRev: CAS with a numeric expected revision behaves correctly", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     const k = Buffer.from("num");
     // initial CAS create
@@ -47,7 +51,8 @@ describe("CAS extended tests", () => {
     expect(ok.ok).toBe(true);
     const v = e.get(k);
     expect(v && v.toString()).toBe("v2");
-    await e.close();
+      await e.close();
+    });
   });
 
   it("smoke: compaction GC respects active snapshots then removes tombstone after snapshot closed", async () => {
@@ -90,10 +95,12 @@ describe("CAS extended tests", () => {
     fs.writeFileSync(`${dir}/manifest.json`, JSON.stringify(manifest, null, 2));
 
     // create engine with short tombstoneRetentionMs so old SST would be eligible for TTL GC
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { tombstoneRetentionMs: 1000 } as any,
-    });
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { tombstoneRetentionMs: 1000 } as any,
+      });
+      await e.open();
 
     // start snapshot at revision 2 to protect the old tombstone (rev 2)
     const snap = e.snapshotAtRevision(2);
@@ -133,6 +140,7 @@ describe("CAS extended tests", () => {
     // It's acceptable if compaction removed the tombstone (foundAfter false) or if retained by other reasons; assert that tombstone was at least present while snapshot active earlier
     expect(foundWhileSnapshot).toBe(true);
 
-    await e.close();
+      await e.close();
+    });
   }, 2000);
 });

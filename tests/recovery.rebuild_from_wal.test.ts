@@ -1,13 +1,15 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 describe("recovery rebuild", () => {
   it("rebuilds a corrupt sst from WAL when possible", async () => {
     const makeTempDir = require("./util/tmpdir");
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
     // insert multiple keys so SST covers a range
     await e.put(Buffer.from("a"), Buffer.from("va"));
     await e.put(Buffer.from("m"), Buffer.from("vm"));
@@ -33,9 +35,9 @@ describe("recovery rebuild", () => {
     } catch (e) {}
 
     // reopen Engine which should attempt to rebuild the SST from WAL
-    await e.close();
-    const e2 = new Engine(dir, "log.wal");
-    await e2.open();
+  await e.close();
+  const e2 = new Engine(dir, "log.wal", { walImpl: impl });
+  await e2.open();
     const manifest2 = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8"));
     const files2 = Array.isArray(manifest2) ? manifest2 : manifest2.files || [];
 
@@ -44,6 +46,7 @@ describe("recovery rebuild", () => {
     // try reading key 'm' which should be present after rebuild
     const v = e2.get(Buffer.from("m"));
     expect(v && v.toString()).toBe("vm");
-    e2.close();
+      e2.close();
+    });
   });
 });

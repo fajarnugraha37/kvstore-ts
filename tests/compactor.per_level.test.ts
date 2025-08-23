@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
 import Manifest from "../libs/storage/manifest";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 const makeTempDir = require("./util/tmpdir");
 import { existsSync, statSync } from "node:fs";
 
@@ -29,11 +30,13 @@ describe("compactor per-level targets", () => {
 
     // per-level max: leave level0 default, but target level1 outputs to small size
     const perLevel = [0, 400, 800];
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { maxSstSize: 1024, perLevelMax: perLevel } as any,
-    });
-    await e.open();
-    const res = await e.compactNow();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { maxSstSize: 1024, perLevelMax: perLevel } as any,
+      });
+      await e.open();
+      const res = await e.compactNow();
     // reload manifest and verify level1 files
     const persisted = Manifest.load(dir);
     const lvl1 = persisted.listFilesByLevel(1);
@@ -43,6 +46,7 @@ describe("compactor per-level targets", () => {
       const st = statSync(f.file);
       expect(st.size).toBeLessThanOrEqual(target);
     }
-    await e.close();
+      await e.close();
+    });
   });
 });

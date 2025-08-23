@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { SSTWriter } from "../libs/storage";
 import Manifest from "../libs/storage/manifest";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 const makeTempDir = require("./util/tmpdir");
 import { existsSync, statSync } from "node:fs";
 
@@ -27,12 +28,14 @@ describe("compactor manifest size fidelity", () => {
       });
     }
 
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { maxSstSize: 1024 } as any,
-    });
-    await e.open();
-    // run compaction synchronously to avoid races
-    const res = await e.compactNow();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { maxSstSize: 1024 } as any,
+      });
+      await e.open();
+      // run compaction synchronously to avoid races
+      const res = await e.compactNow();
     // reload manifest
     const persisted = Manifest.load(dir);
     const files = persisted.listFiles();
@@ -42,6 +45,7 @@ describe("compactor manifest size fidelity", () => {
       const st = statSync(f.file);
       expect(st.size).toBe(f.size);
     }
-    await e.close();
+      await e.close();
+    });
   });
 });

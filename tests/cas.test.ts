@@ -1,12 +1,14 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 const makeTempDir = require("./util/tmpdir");
 
 describe("CAS (compare-and-swap)", () => {
   it("basic CAS success and failure", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     // empty store: CAS expecting null should succeed
     const k = Buffer.from("x");
@@ -29,13 +31,15 @@ describe("CAS (compare-and-swap)", () => {
     // verify final value
     const v = e.get(k);
     expect(v && v.toString()).toBe("v2");
-    e.close();
+      e.close();
+    });
   });
 
   it("concurrent CAS attempts serialize and result in a single winner per key", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     const k = Buffer.from("concurrent");
     const attempts = 10;
@@ -60,6 +64,7 @@ describe("CAS (compare-and-swap)", () => {
     const final = e.get(k);
     expect(final && final.toString()).toBe("v" + winner.idx);
 
-    e.close();
+      e.close();
+    });
   }, 2000);
 });

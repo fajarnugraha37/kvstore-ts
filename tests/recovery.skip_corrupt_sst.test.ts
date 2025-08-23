@@ -1,13 +1,15 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 describe("recovery policy", () => {
   it("skips corrupt sst on open and persists manifest changes", async () => {
     const makeTempDir = require("./util/tmpdir");
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
     await e.put(Buffer.from("c1"), Buffer.from("v1"));
     await e.flush();
     // read manifest and pick last file
@@ -30,13 +32,14 @@ describe("recovery policy", () => {
     } catch (e) {}
 
     // re-open engine which should skip/rename the corrupt SST and persist manifest removal
-    e.close();
-    const e2 = new Engine(dir, "log.wal");
-    await e2.open();
+  e.close();
+  const e2 = new Engine(dir, "log.wal", { walImpl: impl });
+  await e2.open();
     const manifest2 = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8"));
     const files2 = Array.isArray(manifest2) ? manifest2 : manifest2.files || [];
     // ensure the corrupt file is no longer present in manifest
     expect(files2.find((x: any) => x.file === f.file)).toBeUndefined();
-    e2.close();
+      e2.close();
+    });
   });
 });

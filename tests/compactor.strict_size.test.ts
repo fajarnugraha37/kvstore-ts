@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { SSTWriter, SSTReader } from "../libs/storage";
 import Manifest from "../libs/storage/manifest";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 const makeTempDir = require("./util/tmpdir");
 import { existsSync, statSync, unlinkSync } from "node:fs";
 
@@ -34,11 +35,13 @@ describe("compactor strict size enforcement", () => {
     }
 
     // Start Engine with compactorOptions and background compaction enabled
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { maxSstSize: maxSst } as any,
-    });
-    // open engine to ensure background compactor starts
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { maxSstSize: maxSst } as any,
+      });
+      // open engine to ensure background compactor starts
+      await e.open();
 
     // wait up to 5s for compaction to run and manifest to be updated
     const deadline = Date.now() + 5000;
@@ -86,11 +89,11 @@ describe("compactor strict size enforcement", () => {
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    // cleanup
-    try {
-      await e.close();
-    } catch {}
-
-    expect(success).toBe(true);
+        // cleanup
+        try {
+          await e.close();
+        } catch {}
+        expect(success).toBe(true);
+      });
   });
 });

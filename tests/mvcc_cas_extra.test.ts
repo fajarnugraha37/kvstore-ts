@@ -1,14 +1,14 @@
 import { describe, it, expect } from "bun:test";
 const makeTempDir = require("./util/tmpdir");
 import Engine from "../libs/storage/engine";
-import { SSTWriter } from "../libs/storage/sstwriter";
-import { SSTReader } from "../libs/storage/sstreader";
+import { withWalImpls } from "./util/engine_test_runner";
 
 describe("MVCC & CAS extra tests", () => {
   it("concurrent CAS stress: many concurrent CAS attempts serialize and one wins", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     const key = Buffer.from("concur");
     const attempts = 50;
@@ -32,15 +32,18 @@ describe("MVCC & CAS extra tests", () => {
     // final value should equal winner's value
     const final = e.get(key);
     expect(final).not.toBeNull();
-    await e.close();
+      await e.close();
+    });
   });
 
   it("CAS with snapshot under compaction: snapshot preserves revision visibility during compaction", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal", {
-      compactorOptions: { tombstoneRetentionMs: 1000 } as any,
-    });
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", {
+        walImpl: impl,
+        compactorOptions: { tombstoneRetentionMs: 1000 } as any,
+      });
+      await e.open();
 
     const key = Buffer.from("snapk");
     // create initial value and flush to create SST
@@ -129,20 +132,22 @@ describe("MVCC & CAS extra tests", () => {
     expect(sawV2).toBe(true);
 
     // close snapshot and allow tombstone TTL to expire then compact
-    if (snapIt.return) await snapIt.return();
-    await new Promise((r) => setTimeout(r, 10));
-    await e.compactNow();
-    // After compaction and TTL-based tombstone removal, the previously-live value (v2)
-    // should be visible as the latest.
-    const latest = e.get(k);
-    expect(latest && latest.toString()).toBe("v2");
-    await e.close();
+      if (snapIt.return) await snapIt.return();
+      await new Promise((r) => setTimeout(r, 10));
+      await e.compactNow();
+      // After compaction and TTL-based tombstone removal, the previously-live value (v2)
+      // should be visible as the latest.
+      const latest = e.get(k);
+      expect(latest && latest.toString()).toBe("v2");
+      await e.close();
+    });
   });
 
   it("multiple revisions across SSTs and memtable are visible via getAtRevision", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     const k = Buffer.from("multi");
     await e.put(k, Buffer.from("r1"));
@@ -158,6 +163,7 @@ describe("MVCC & CAS extra tests", () => {
     expect(v2 && v2.toString()).toBe("r2");
     expect(v3 && v3.toString()).toBe("r3");
 
-    await e.close();
+      await e.close();
+    });
   });
 });

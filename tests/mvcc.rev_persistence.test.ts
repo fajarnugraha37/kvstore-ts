@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import Engine from "../libs/storage/engine";
+import { withWalImpls } from "./util/engine_test_runner";
 const makeTempDir = require("./util/tmpdir");
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { SSTReader } from "../libs/storage";
@@ -7,8 +8,9 @@ import { SSTReader } from "../libs/storage";
 describe("mvcc revision persistence", () => {
   it("writes revisions to SST and preserves highest revision after compaction/recovery", async () => {
     const dir = makeTempDir();
-    const e = new Engine(dir, "log.wal");
-    await e.open();
+    await withWalImpls(async (impl) => {
+      const e = new Engine(dir, "log.wal", { walImpl: impl });
+      await e.open();
 
     // two updates to same key
     await e.put(Buffer.from("k"), Buffer.from("v1"));
@@ -40,7 +42,7 @@ describe("mvcc revision persistence", () => {
 
     // Now restart engine and ensure get() returns latest value (v2)
     e.close();
-    const e2 = new Engine(dir, "log.wal");
+    const e2 = new Engine(dir, "log.wal", { walImpl: impl });
     await e2.open();
     const val = e2.get(Buffer.from("k"));
     expect(val && val.toString()).toBe("v2");
@@ -52,5 +54,6 @@ describe("mvcc revision persistence", () => {
         if (existsSync(f.file)) unlinkSync(f.file);
       } catch {}
     }
+    });
   });
 });
