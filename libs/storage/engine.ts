@@ -161,6 +161,30 @@ export class Engine {
 
   private compactionTimer: NodeJS.Timeout | null = null;
 
+  // Helper to choose buffered scan when WAL implementation provides it.
+  // Returns an async iterable (generator) for WAL entries starting at minOffset.
+  private walScan(minOffset?: number) {
+    const w = this.wal as any;
+    if (w && typeof w.scanBuffered === "function")
+      return w.scanBuffered(minOffset);
+    return w.scan(minOffset);
+  }
+
+  // Helper to obtain WAL entries with offsets when possible.
+  // Prefer `scanWithOffsets`; otherwise map `scanBuffered` results to objects
+  // shaped like { value, start, end } where offsets are undefined.
+  private walScanWithOffsets(minOffset?: number) {
+    const w = this.wal as any;
+    if (w && typeof w.scanWithOffsets === "function")
+      return w.scanWithOffsets(minOffset);
+    const gen = async function* (iter: AsyncIterable<any>) {
+      for await (const v of iter) {
+        yield { value: v, start: undefined, end: undefined };
+      }
+    };
+    return gen(this.walScan(minOffset) as AsyncIterable<any>);
+  }
+
   // Start background compaction runner if compactorOptions provided. IntervalMs defaults to 5s.
   startBackgroundCompaction(intervalMs?: number) {
     if (this.compactionTimer) return;
@@ -800,7 +824,7 @@ export class Engine {
     if (debugRebuild) {
       try {
         console.log("[debug] dumping WAL entries (start,end,key,len)");
-        for await (const rec of (this.wal as any).scanWithOffsets(0)) {
+        for await (const rec of this.walScanWithOffsets(0)) {
           try {
             const valueStr =
               rec.value &&
@@ -869,9 +893,7 @@ export class Engine {
             // conservative minOffset for scanning: replay from start (0)
             // This avoids skipping entries when other manifest entries may have missing/incorrect walOffset
             const minForRebuild = 0;
-            for await (const rec of (this.wal as any).scanWithOffsets(
-              minForRebuild
-            )) {
+            for await (const rec of this.walScanWithOffsets(minForRebuild)) {
               const entry = rec.value;
               if (!entry || !entry.key) continue;
               const k = Buffer.from(entry.key);
@@ -1054,7 +1076,7 @@ export class Engine {
               typeof (this.watchManager as any).replayFromScan === "function"
             ) {
               await (this.watchManager as any).replayFromScan(
-                (this.wal as any).scan(minRequiredWalOffset),
+                this.walScan(minRequiredWalOffset),
                 minRev
               );
             }
@@ -1065,7 +1087,7 @@ export class Engine {
       }
     } catch (e) {}
     // replay WAL into memtable (skip segments wholly covered by SSTs)
-    for await (const entry of (this.wal as any).scan(minRequiredWalOffset)) {
+    for await (const entry of this.walScan(minRequiredWalOffset)) {
       if (debugReplay) {
         try {
           const k =
