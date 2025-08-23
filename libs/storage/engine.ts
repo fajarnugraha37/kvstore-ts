@@ -68,8 +68,14 @@ export class Engine {
       adaptiveCompression?: boolean;
       compressionSampleSize?: number;
       minCompressionRatio?: number;
+      // WAL batching options (experimental)
+      walBatching?: boolean;
+      walBatchOptions?: any;
     }
   ) {
+    // extend opts typing with WAL batching options (backwards-compatible)
+    type EngineOptsAny = any;
+    this.opts = this.opts as EngineOptsAny;
     const manifestStrict =
       typeof this.opts?.strictAtomicity === "boolean"
         ? this.opts.strictAtomicity
@@ -79,10 +85,25 @@ export class Engine {
     this.manifest = Manifest.load(dir, manifestStrict);
     this.walFile = walFile;
     const impl = this.opts?.walImpl || "wal";
+    // prepare WAL options based on engine-level settings
+    const walOpts: any = {};
+    // allow explicit walBatchOptions or shorthand walBatching boolean
+    if (this.opts && typeof this.opts.walBatchOptions === "object") {
+      Object.assign(walOpts, this.opts.walBatchOptions);
+    }
+    if (this.opts && typeof this.opts.walBatching === "boolean") {
+      walOpts.batching = this.opts.walBatching;
+    }
+    // propagate strictAtomicity as backgroundFlush=false when durability guaranteed by caller
+    if (typeof this.opts?.strictAtomicity === "boolean") {
+      // if strictAtomicity requested, prefer synchronous durability: disable background flush
+      if (this.opts.strictAtomicity) walOpts.backgroundFlush = false;
+    }
+
     if (impl === "handoff") {
-      this.wal = new HandoffWal(walFile, { batching: false });
+      this.wal = new HandoffWal(walFile, walOpts);
     } else {
-      this.wal = new Wal(walFile, { batching: false });
+      this.wal = new Wal(walFile, walOpts);
     }
     (this.wal as any).rootDir = dir;
   }
@@ -485,7 +506,7 @@ export class Engine {
       : 0;
     const debugReplay = !!process.env.KV_DEBUG_REPLAY;
     // replay WAL into memtable (skip segments wholly covered by SSTs)
-  for await (const entry of (this.wal as any).scan(minRequiredWalOffset)) {
+    for await (const entry of (this.wal as any).scan(minRequiredWalOffset)) {
       if (debugReplay) {
         try {
           const k =
