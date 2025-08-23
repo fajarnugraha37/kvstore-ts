@@ -13,6 +13,31 @@ import type { CompactorOptions } from "./compactor";
 
 type SSTHandle = { reader: SSTReader; meta: any };
 
+// Engine options interface (keeps previous inline shape centralized)
+export interface EngineOptions {
+  gcIntervalMs?: number;
+  deleteMarkerStaleMs?: number;
+  enableMarkerGC?: boolean;
+  compactorOptions?: CompactorOptions;
+  timeProvider?: () => number;
+  walImpl?: "wal" | "handoff";
+  strictAtomicity?: boolean;
+  compressionAlgo?: number;
+  compressionThreshold?: number;
+  adaptiveCompression?: boolean;
+  compressionSampleSize?: number;
+  minCompressionRatio?: number;
+  walBatching?: boolean;
+  walBatchOptions?: any;
+  leaseUnknownPolicy?: "create" | "ignore" | "throw";
+}
+
+export type LeaseEvent = {
+  type: "grant" | "expire" | "evict" | "revoke";
+  leaseId: number;
+  keys?: string[];
+};
+
 export class Engine {
   // simple runtime metrics
   public metrics = {
@@ -30,6 +55,12 @@ export class Engine {
       compressedBlocks: 0,
       compressionAttempts: 0,
     },
+    leases: {
+      granted: 0,
+      expired: 0,
+      evictedKeys: 0,
+      revoked: 0,
+    },
   };
   private mem = new MemTable();
   // global monotonically-increasing revision counter for MVCC
@@ -46,36 +77,29 @@ export class Engine {
   private _txSerial: Promise<void> = Promise.resolve();
   // track active snapshot revisions to compute min-active-rev for compaction GC
   private activeSnapshotCounts: Map<number, number> = new Map();
+  // Lease management
+  private leases: Map<number, { expiresAt: number; keys: Set<string> }> =
+    new Map();
+  private keyToLease: Map<string, number> = new Map();
+  private leaseCounter = 0;
+  private leaseEvictTimer: NodeJS.Timeout | null = null;
+  // Optional hook for emitting lease lifecycle events: { type, leaseId, keys? }
+  public onLeaseEvent?: (ev: {
+    type: "grant" | "expire" | "evict" | "revoke";
+    leaseId: number;
+    keys?: string[];
+  }) => void;
 
   constructor(
     private dir = "./data",
     walFile = "log.wal",
-    private opts?: {
-      gcIntervalMs?: number;
-      deleteMarkerStaleMs?: number;
-      enableMarkerGC?: boolean;
-      compactorOptions?: CompactorOptions;
-      // optional time provider for deterministic tests
-      timeProvider?: () => number;
-      // choose WAL implementation: 'wal' (default) or 'handoff'
-      walImpl?: "wal" | "handoff";
-      // when true, SSTWriter and Manifest will perform durable fsyncs on tmp files and parent dir
-      // during writes/renames (best-effort). Explicit engine-level flag overrides compactorOptions.
-      strictAtomicity?: boolean;
-      // compression options that are applied when Engine creates SSTWriter instances
-      compressionAlgo?: number;
-      compressionThreshold?: number;
-      adaptiveCompression?: boolean;
-      compressionSampleSize?: number;
-      minCompressionRatio?: number;
-      // WAL batching options (experimental)
-      walBatching?: boolean;
-      walBatchOptions?: any;
-    }
+    private opts?: EngineOptions
   ) {
     // extend opts typing with WAL batching options (backwards-compatible)
     type EngineOptsAny = any;
-    this.opts = this.opts as EngineOptsAny;
+    this.opts = (this.opts as EngineOptsAny) || {};
+    // normalize defaults so later code can read this.opts.leaseUnknownPolicy directly
+    this.opts = Object.assign({ leaseUnknownPolicy: "create" }, this.opts);
     const manifestStrict =
       typeof this.opts?.strictAtomicity === "boolean"
         ? this.opts.strictAtomicity
@@ -134,6 +158,390 @@ export class Engine {
         this.metrics.compaction.lastDurationMs = dur;
       } catch (e) {
         // ignore compaction errors in background
+      }
+    }, iv) as unknown as NodeJS.Timeout;
+  }
+
+  /**
+   * Lease APIs: simple lease table to support TTL-driven eviction and renewal.
+   * Lease IDs are numeric. Each lease tracks a set of keys and an expiry (ms epoch).
+   */
+  // Grant a lease valid for ttlMs milliseconds and return lease id
+  grantLease(ttlMs: number): number {
+    const id = ++this.leaseCounter;
+    const now =
+      typeof this.opts?.timeProvider === "function"
+        ? this.opts.timeProvider()
+        : Date.now();
+    this.leases.set(id, {
+      expiresAt: now + Math.max(1, ttlMs),
+      keys: new Set(),
+    });
+    // metrics & event
+    try {
+      this.metrics.leases.granted += 1;
+    } catch (e) {}
+    try {
+      if (typeof this.onLeaseEvent === "function")
+        this.onLeaseEvent({ type: "grant", leaseId: id });
+    } catch (e) {}
+    return id;
+  }
+
+  // Attach a key to a lease so eviction knows which keys to delete when lease expires
+  attachLease(leaseId: number, key: Buffer) {
+    const hex = key.toString("hex");
+    const lease = this.leases.get(leaseId);
+    if (!lease) throw new Error("lease not found");
+    lease.keys.add(hex);
+    this.keyToLease.set(hex, leaseId);
+  }
+
+  // Renew a lease's TTL (in milliseconds) from now. Returns true if renewed, false if lease not found.
+  renewLease(leaseId: number, ttlMs: number): boolean {
+    const lease = this.leases.get(leaseId);
+    if (!lease) return false;
+    const now =
+      typeof this.opts?.timeProvider === "function"
+        ? this.opts.timeProvider()
+        : Date.now();
+    lease.expiresAt = now + Math.max(1, ttlMs);
+    return true;
+  }
+
+  // Revoke a lease immediately and optionally delete its keys (if deleteKeys=true)
+  revokeLease(leaseId: number, deleteKeys = false) {
+    const lease = this.leases.get(leaseId);
+    if (!lease) return false;
+    const keys = Array.from(lease.keys).map((h) => Buffer.from(h, "hex"));
+    // detach mappings
+    for (const k of keys) {
+      const hex = k.toString("hex");
+      this.keyToLease.delete(hex);
+      lease.keys.delete(hex);
+      if (deleteKeys) {
+        // schedule immediate delete via memtable and wal (best-effort synchronous)
+        try {
+          this.revCounter += 1;
+          const rev = this.revCounter;
+          // fire-and-forget wal append
+          (this.wal as any)
+            .append({ key: k.toString(), value: null, rev })
+            .catch(() => {});
+          this.mem.delete(k, rev);
+        } catch (e) {}
+      }
+    }
+    this.leases.delete(leaseId);
+    // metrics & event
+    try {
+      this.metrics.leases.revoked += 1;
+    } catch (e) {}
+    try {
+      if (typeof this.onLeaseEvent === "function")
+        this.onLeaseEvent({
+          type: "revoke",
+          leaseId,
+          keys: keys.map((k) => k.toString("hex")),
+        });
+    } catch (e) {}
+    return true;
+  }
+
+  // overloads: single put and bulk put with array of entries
+  put(
+    key: Buffer,
+    value: Buffer,
+    opts?: { leaseId?: number; leaseTtlMs?: number }
+  ): Promise<void>;
+  put(
+    entries: Array<{ key: Buffer; value: Buffer }>,
+    opts?: { leaseId?: number; leaseTtlMs?: number }
+  ): Promise<void>;
+  async put(
+    keyOrEntries: Buffer | Array<{ key: Buffer; value: Buffer }>,
+    valueOrOpts?: Buffer | { leaseId?: number; leaseTtlMs?: number },
+    maybeOpts?: { leaseId?: number; leaseTtlMs?: number }
+  ) {
+    // determine call form
+    if (Array.isArray(keyOrEntries)) {
+      // Bulk put path: entries array and optional opts
+      const entries = keyOrEntries as Array<{ key: Buffer; value: Buffer }>;
+      const opts = (valueOrOpts as any) || {};
+      if (entries.length === 0) return;
+
+      // Acquire locks for all keys
+      const unlockAll = await this.acquireKeyLocks(entries.map((e) => e.key));
+      try {
+        // allocate consecutive revisions
+        const revs = await this.allocateRevs(entries.length);
+
+        // handle lease auto-create / pre-attach for bulk when leaseId provided
+        let leaseIdToRecord: number | undefined = undefined;
+        let leaseExpiresAt: number | undefined = undefined;
+        if (opts && typeof opts.leaseId === "number") {
+          let lid = opts.leaseId;
+          let lease = this.leases.get(lid);
+          if (!lease) {
+            const policy = this.opts?.leaseUnknownPolicy || "create";
+            if (policy === "throw") throw new Error("lease not found");
+            if (policy === "create") {
+              const ttl =
+                typeof opts.leaseTtlMs === "number"
+                  ? opts.leaseTtlMs
+                  : 60 * 1000;
+              lid = this.grantLease(ttl);
+              lease = this.leases.get(lid)!;
+            } else {
+              // ignore: leave lease undefined and do not record lease metadata
+              lease = undefined as any;
+            }
+          }
+          if (lease) {
+            leaseIdToRecord = lid;
+            leaseExpiresAt = lease!.expiresAt;
+            // attach each key to lease (detaching previous lease if present)
+            for (const e of entries) {
+              const hex = e.key.toString("hex");
+              const prev = this.keyToLease.get(hex);
+              if (typeof prev === "number" && prev !== lid) {
+                const prevLease = this.leases.get(prev);
+                if (prevLease) prevLease.keys.delete(hex);
+              }
+              lease!.keys.add(hex);
+              this.keyToLease.set(hex, lid);
+            }
+          }
+        }
+
+        // build WAL ops with lease metadata if present
+        const walOps = entries.map((e, i) => {
+          const op: any = {
+            key: e.key.toString(),
+            value: e.value.toString(),
+            rev: revs[i],
+          };
+          if (typeof leaseIdToRecord === "number") {
+            op.leaseId = leaseIdToRecord;
+            if (typeof leaseExpiresAt === "number")
+              op.leaseExpiresAt = leaseExpiresAt;
+          }
+          return op;
+        });
+
+        // append as a single transaction
+        await (this as any).wal.append({ tx: true, ops: walOps });
+
+        // If strict atomicity requested, flush WAL before applying
+        if (
+          typeof this.opts?.strictAtomicity === "boolean"
+            ? this.opts.strictAtomicity
+            : this.opts?.compactorOptions &&
+              (this.opts.compactorOptions as any).strictAtomicity
+        ) {
+          if (typeof (this as any).wal.flush === "function") {
+            try {
+              await (this as any).wal.flush();
+            } catch (e) {}
+          }
+        }
+
+        // apply to memtable
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i]!;
+          const r = revs[i];
+          this.mem.put(e.key, e.value, r);
+        }
+      } finally {
+        try {
+          unlockAll();
+        } catch {}
+      }
+      return;
+    }
+
+    // Single-key path: reuse previous behavior
+    const key = keyOrEntries as Buffer;
+    const value = valueOrOpts as Buffer;
+    const opts = maybeOpts as any;
+    // ensure atomicity with CAS by acquiring per-key lock
+    const unlock = await this.acquireKeyLock(key);
+    try {
+      // allocate next revision
+      this.revCounter += 1;
+      const rev = this.revCounter;
+
+      // handle lease auto-create / pre-attach if requested
+      let leaseIdToRecord: number | undefined = undefined;
+      let leaseExpiresAt: number | undefined = undefined;
+      if (opts && typeof opts.leaseId === "number") {
+        let lid = opts.leaseId;
+        const hex = key.toString("hex");
+        let lease = this.leases.get(lid);
+        if (!lease) {
+          const policy = this.opts?.leaseUnknownPolicy || "create";
+          if (policy === "throw") throw new Error("lease not found");
+          if (policy === "create") {
+            const ttl =
+              typeof opts.leaseTtlMs === "number" ? opts.leaseTtlMs : 60 * 1000;
+            lid = this.grantLease(ttl);
+            lease = this.leases.get(lid)!;
+          } else {
+            lease = undefined as any;
+          }
+        }
+
+        if (lease) {
+          // update mapping before writing WAL (pre-attach)
+          const prev = this.keyToLease.get(hex);
+          if (typeof prev === "number" && prev !== lid) {
+            const prevLease = this.leases.get(prev);
+            if (prevLease) prevLease.keys.delete(hex);
+          }
+          lease.keys.add(hex);
+          this.keyToLease.set(hex, lid);
+          leaseIdToRecord = lid;
+          leaseExpiresAt = lease.expiresAt;
+        }
+      }
+
+      // persist WAL entry including optional lease metadata so replay can restore mappings
+      const walRec: any = {
+        key: key.toString(),
+        value: value.toString(),
+        rev,
+      };
+      if (typeof leaseIdToRecord === "number") {
+        walRec.leaseId = leaseIdToRecord;
+        if (typeof leaseExpiresAt === "number")
+          walRec.leaseExpiresAt = leaseExpiresAt;
+      }
+      await this.wal.append(walRec);
+      this.mem.put(key, value, rev);
+    } finally {
+      unlock();
+    }
+  }
+
+  stopLeaseEvictor() {
+    if (this.leaseEvictTimer) {
+      clearInterval(this.leaseEvictTimer as any);
+      this.leaseEvictTimer = null;
+    }
+  }
+
+  startLeaseEvictor(intervalMs?: number) {
+    if (this.leaseEvictTimer) return;
+    const iv = typeof intervalMs === "number" ? intervalMs : 1000;
+    this.leaseEvictTimer = setInterval(async () => {
+      try {
+        // optional detailed debug tracing for flaky tests
+        const debugEvict = !!process.env.KV_DEBUG_EVICT;
+        if (debugEvict) {
+          try {
+            console.log("[evictor] tick at", Date.now());
+          } catch {}
+        }
+        const now =
+          typeof this.opts?.timeProvider === "function"
+            ? this.opts.timeProvider()
+            : Date.now();
+        const expired: number[] = [];
+        for (const [id, l] of this.leases.entries()) {
+          if (l.expiresAt <= now) expired.push(id);
+        }
+        if (debugEvict && expired.length > 0) {
+          try {
+            console.log("[evictor] expired leases:", expired);
+          } catch {}
+        }
+        for (const lid of expired) {
+          const l = this.leases.get(lid);
+          if (!l) continue;
+          const keys = Array.from(l.keys).map((h) => Buffer.from(h, "hex"));
+          if (keys.length === 0) {
+            this.leases.delete(lid);
+            try {
+              this.metrics.leases.expired += 1;
+            } catch (e) {}
+            try {
+              if (typeof this.onLeaseEvent === "function")
+                this.onLeaseEvent({ type: "expire", leaseId: lid });
+            } catch (e) {}
+            continue;
+          }
+          // Acquire locks for all keys, allocate revs and append a single tx delete record
+          const unlockAll = await this.acquireKeyLocks(keys);
+          try {
+            const revs = await this.allocateRevs(keys.length);
+            const walOps = keys.map((k, i) => ({
+              key: k.toString(),
+              value: null,
+              rev: revs[i],
+            }));
+            if (debugEvict) {
+              try {
+                console.log(
+                  "[evictor] appending wal tx for lease",
+                  lid,
+                  "ops:",
+                  walOps.map((o) => ({ key: o.key, rev: o.rev }))
+                );
+              } catch {}
+            }
+            await (this as any).wal.append({ tx: true, ops: walOps });
+            // Ensure WAL is flushed to durable storage before applying memtable deletes
+            if (typeof (this as any).wal.flush === "function") {
+              try {
+                await (this as any).wal.flush();
+              } catch (e) {}
+            }
+            // apply deletes
+            for (let i = 0; i < keys.length; i++) {
+              const k = keys[i];
+              const r = revs[i];
+              if (!k) continue;
+              if (typeof r === "number") this.mem.delete(k, r);
+              else this.mem.delete(k, undefined as any);
+              const hex = k.toString("hex");
+              this.keyToLease.delete(hex);
+              try {
+                this.metrics.leases.evictedKeys += 1;
+              } catch (e) {}
+            }
+            if (debugEvict) {
+              try {
+                console.log(
+                  "[evictor] applied deletes for lease",
+                  lid,
+                  "keys:",
+                  keys.map((k) => k.toString())
+                );
+              } catch {}
+            }
+            // emit expire/evict event and remove lease entry
+            try {
+              this.metrics.leases.expired += 1;
+            } catch (e) {}
+            try {
+              if (typeof this.onLeaseEvent === "function")
+                this.onLeaseEvent({
+                  type: "evict",
+                  leaseId: lid,
+                  keys: keys.map((k) => k.toString("hex")),
+                });
+            } catch (e) {}
+            this.leases.delete(lid);
+          } catch (e) {
+            // best-effort
+          } finally {
+            try {
+              unlockAll();
+            } catch {}
+          }
+        }
+      } catch (e) {
+        // ignore
       }
     }, iv) as unknown as NodeJS.Timeout;
   }
@@ -521,7 +929,7 @@ export class Engine {
         } catch (e) {}
       }
       if (entry) {
-        // Support plain per-op entries: { key, value, rev }
+        // Support plain per-op entries: { key, value, rev, leaseId?, leaseExpiresAt? }
         if (entry.key) {
           const kbuf = Buffer.from(entry.key);
           if (entry.value == null)
@@ -538,6 +946,41 @@ export class Engine {
           if (typeof entry.rev === "number" && Number.isFinite(entry.rev)) {
             this.revCounter = Math.max(this.revCounter, entry.rev);
           }
+          // if tombstone, remove any lease mapping for this key; otherwise restore mapping if present
+          try {
+            const hex = kbuf.toString("hex");
+            if (entry.value == null) {
+              const lid = this.keyToLease.get(hex);
+              if (typeof lid === "number") {
+                const l = this.leases.get(lid);
+                if (l) l.keys.delete(hex);
+                this.keyToLease.delete(hex);
+              }
+            }
+            if (typeof entry.leaseId === "number") {
+              const lid = entry.leaseId;
+              let lease = this.leases.get(lid);
+              const expiresAt =
+                typeof entry.leaseExpiresAt === "number"
+                  ? entry.leaseExpiresAt
+                  : typeof this.opts?.timeProvider === "function"
+                  ? this.opts.timeProvider()
+                  : Date.now();
+              if (!lease) {
+                const newLease = { expiresAt, keys: new Set<string>() } as {
+                  expiresAt: number;
+                  keys: Set<string>;
+                };
+                this.leases.set(lid, newLease);
+                this.leaseCounter = Math.max(this.leaseCounter, lid);
+                lease = newLease;
+              } else {
+                lease.expiresAt = expiresAt;
+              }
+              lease.keys.add(hex);
+              this.keyToLease.set(hex, lid);
+            }
+          } catch (e) {}
         } else if (entry.tx && Array.isArray(entry.ops)) {
           // Transaction record: apply each op in order
           for (const op of entry.ops) {
@@ -549,6 +992,41 @@ export class Engine {
             if (typeof op.rev === "number" && Number.isFinite(op.rev)) {
               this.revCounter = Math.max(this.revCounter, op.rev);
             }
+            // if tombstone, remove mapping; otherwise restore mapping when present on op
+            try {
+              const hex = kbuf.toString("hex");
+              if (op.value == null) {
+                const lidPrev = this.keyToLease.get(hex);
+                if (typeof lidPrev === "number") {
+                  const l = this.leases.get(lidPrev);
+                  if (l) l.keys.delete(hex);
+                  this.keyToLease.delete(hex);
+                }
+              }
+              if (typeof op.leaseId === "number") {
+                const lid = op.leaseId;
+                let lease = this.leases.get(lid);
+                const expiresAt =
+                  typeof op.leaseExpiresAt === "number"
+                    ? op.leaseExpiresAt
+                    : typeof this.opts?.timeProvider === "function"
+                    ? this.opts.timeProvider()
+                    : Date.now();
+                if (!lease) {
+                  const newLease = { expiresAt, keys: new Set<string>() } as {
+                    expiresAt: number;
+                    keys: Set<string>;
+                  };
+                  this.leases.set(lid, newLease);
+                  this.leaseCounter = Math.max(this.leaseCounter, lid);
+                  lease = newLease;
+                } else {
+                  lease.expiresAt = expiresAt;
+                }
+                lease.keys.add(hex);
+                this.keyToLease.set(hex, lid);
+              }
+            } catch (e) {}
           }
         }
       }
@@ -563,6 +1041,8 @@ export class Engine {
       // use short interval in tests to make it responsive
       this.startBackgroundCompaction(1000);
     }
+    // start lease evictor if tombstone retention or lease usage expected
+    this.startLeaseEvictor(1000);
   }
 
   /**
@@ -675,42 +1155,6 @@ export class Engine {
     };
   }
 
-  async put(key: Buffer, value: Buffer) {
-    // ensure atomicity with CAS by acquiring per-key lock
-    const unlock = await this.acquireKeyLock(key);
-    try {
-      // allocate next revision and persist it in WAL
-      this.revCounter += 1;
-      const rev = this.revCounter;
-      await this.wal.append({
-        key: key.toString(),
-        value: value.toString(),
-        rev,
-      });
-      this.mem.put(key, value, rev);
-    } finally {
-      unlock();
-    }
-    // trigger flush if memtable exceeds approximate limit
-    try {
-      const sz = (this.mem as any).sizeBytes?.();
-      const limit = (this.mem as any).approxLimit?.();
-      if (typeof sz === "number" && typeof limit === "number" && sz >= limit) {
-        if (!this.flushing) {
-          this.flushing = true;
-          try {
-            // blocking flush: await to provide backpressure to callers
-            await this.flush();
-          } finally {
-            this.flushing = false;
-          }
-        }
-      }
-    } catch (e) {
-      // best-effort, ignore
-    }
-  }
-
   async del(key: Buffer) {
     const unlock = await this.acquireKeyLock(key);
     try {
@@ -718,6 +1162,16 @@ export class Engine {
       const rev = this.revCounter;
       await this.wal.append({ key: key.toString(), value: null, rev });
       this.mem.delete(key, rev);
+      // remove lease mapping if present
+      try {
+        const hex = key.toString("hex");
+        const lid = this.keyToLease.get(hex);
+        if (typeof lid === "number") {
+          const l = this.leases.get(lid);
+          if (l) l.keys.delete(hex);
+          this.keyToLease.delete(hex);
+        }
+      } catch (e) {}
     } finally {
       unlock();
     }
@@ -1130,6 +1584,7 @@ export class Engine {
     // stop GC worker
     this.stopWalGC();
     this.stopBackgroundCompaction();
+    this.stopLeaseEvictor();
     await this.wal.close();
   }
 
@@ -1211,6 +1666,13 @@ export class Engine {
       if (typeof min !== "number" || r < min) min = r;
     }
     return min;
+  }
+
+  // Test helper: return lease info (copy) for a given lease id
+  getLeaseInfo(leaseId: number) {
+    const l = this.leases.get(leaseId);
+    if (!l) return null;
+    return { expiresAt: l.expiresAt, keys: Array.from(l.keys) };
   }
 
   // returns maximum active snapshot revision or undefined
