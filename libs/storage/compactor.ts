@@ -27,6 +27,9 @@ export type CompactorOptions = {
   tombstoneRetentionMs?: number;
   // Optional time provider for deterministic tests (returns epoch ms)
   timeProvider?: () => number;
+  // When true, perform durable fsyncs on tmp files and parent dir after rename for strict atomicity.
+  // This may be slower but reduces window for lost renames on crash.
+  strictAtomicity?: boolean;
 };
 
 export class Compactor {
@@ -284,7 +287,10 @@ export class Compactor {
             curTmp = tmp;
             curOut = outFile;
             // propagate writer options from compactor if any
-            curWriter = new SSTWriter(tmp, outFile);
+            const writerOpts: any = {};
+            if (this.opts && (this.opts as any).strictAtomicity)
+              writerOpts.strictAtomicity = true;
+            curWriter = new SSTWriter(tmp, outFile, writerOpts);
             approxSize = 0;
           }
           if (curMin === null || Buffer.compare(key, curMin) < 0) curMin = key;
@@ -664,7 +670,10 @@ export class Compactor {
                 .toString(16)
                 .slice(2)}.sst`;
               const tmp = `${outFile}.tmp`;
-              curWriter = new SSTWriter(tmp, outFile);
+              const writerOpts2: any = {};
+              if (this.opts && (this.opts as any).strictAtomicity)
+                writerOpts2.strictAtomicity = true;
+              curWriter = new SSTWriter(tmp, outFile, writerOpts2);
             }
 
             // tombstone logic and per-entry throttling (reuse existing code)
@@ -882,7 +891,10 @@ export class Compactor {
               const tmp = `${outFile}.tmp`;
               curTmp = tmp;
               curOut = outFile;
-              curWriter = new SSTWriter(tmp, outFile);
+              const writerOpts3: any = {};
+              if (this.opts && (this.opts as any).strictAtomicity)
+                writerOpts3.strictAtomicity = true;
+              curWriter = new SSTWriter(tmp, outFile, writerOpts3);
               approxSize = 0;
             }
             if (curMin === null || Buffer.compare(key, curMin) < 0)

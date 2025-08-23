@@ -52,6 +52,8 @@ export type SSTWriterOptions = {
   maxBitsPerEntry?: number;
   compressionAlgo?: number; // 0 = none, 1 = deflate
   compressionThreshold?: number; // minimum raw block size to attempt compression
+  // when true, perform durable fsyncs on tmp files and parent dir after rename
+  strictAtomicity?: boolean;
 };
 
 export class SSTWriter {
@@ -433,8 +435,7 @@ export class SSTWriter {
     let off = BigInt(SST_HEADER_LEN); // header length
     const compression = this.opts.compressionAlgo ?? 0;
     const compressionThreshold =
-      this.opts.compressionThreshold ??
-      DEFAULT_COMPRESSION_THRESHOLD;
+      this.opts.compressionThreshold ?? DEFAULT_COMPRESSION_THRESHOLD;
     for (const b of this.blocks) {
       // build block buffer: count + entries
       const countBuf = writeUint32(b.entries.length);
@@ -569,15 +570,47 @@ export class SSTWriter {
     const fileBuf = Buffer.concat(parts as Buffer[]);
 
     writeFileSync(this.tmpPath, fileBuf);
+    // ensure temp file is flushed to disk before rename (durable write)
     try {
-      const fd2 = openSync(this.tmpPath, "r");
-      try {
-        fsyncSync(fd2);
-      } finally {
-        closeSync(fd2);
+      if (this.opts && this.opts.strictAtomicity) {
+        // notify test hook, then fsync
+        try {
+          if (typeof (SSTWriter as any).TEST_FSYNC_SPY === "function")
+            (SSTWriter as any).TEST_FSYNC_SPY("tmp-file", this.tmpPath);
+        } catch (e) {}
+        const fd2 = openSync(this.tmpPath, "r");
+        try {
+          fsyncSync(fd2);
+        } finally {
+          closeSync(fd2);
+        }
       }
     } catch (e) {}
+    // atomic rename into final path
     renameSync(this.tmpPath, this.finalPath);
+    try {
+      if (typeof (SSTWriter as any).TEST_FSYNC_SPY === "function")
+        (SSTWriter as any).TEST_FSYNC_SPY("rename", this.finalPath);
+    } catch (e) {}
+    // best-effort: fsync parent directory so rename is durable (POSIX);
+    // on Windows this may not be supported, so ignore errors.
+    try {
+      if (this.opts && this.opts.strictAtomicity) {
+        try {
+          if (typeof (SSTWriter as any).TEST_FSYNC_SPY === "function")
+            (SSTWriter as any).TEST_FSYNC_SPY(
+              "dir-fsync",
+              dirname(this.finalPath)
+            );
+        } catch (e) {}
+        const dirFd = openSync(dirname(this.finalPath), "r");
+        try {
+          fsyncSync(dirFd);
+        } finally {
+          closeSync(dirFd);
+        }
+      }
+    } catch (e) {}
 
     const minKey = this.blocks[0]?.firstKey ?? Buffer.alloc(0);
     const lastBlock = this.blocks[this.blocks.length - 1];

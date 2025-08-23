@@ -55,9 +55,18 @@ export class Engine {
       timeProvider?: () => number;
       // choose WAL implementation: 'wal' (default) or 'handoff'
       walImpl?: "wal" | "handoff";
+      // when true, SSTWriter and Manifest will perform durable fsyncs on tmp files and parent dir
+      // during writes/renames (best-effort). Explicit engine-level flag overrides compactorOptions.
+      strictAtomicity?: boolean;
     }
   ) {
-    this.manifest = Manifest.load(dir);
+    const manifestStrict =
+      typeof this.opts?.strictAtomicity === "boolean"
+        ? this.opts.strictAtomicity
+        : this.opts?.compactorOptions
+        ? (this.opts.compactorOptions as any).strictAtomicity
+        : undefined;
+    this.manifest = Manifest.load(dir, manifestStrict);
     this.walFile = walFile;
     const impl = this.opts?.walImpl || "wal";
     if (impl === "handoff") {
@@ -266,7 +275,16 @@ export class Engine {
             // build a new SST from WAL entries in [minKey, maxKey]
             const tmp = `${this.dir}/sst_rebuild_${Date.now()}.tmp`;
             const final = `${this.dir}/sst_rebuild_${Date.now()}.sst`;
-            const w = new SSTWriter(tmp, final);
+            const wOptsRebuild: any = {};
+            // prefer explicit engine-level strictAtomicity, else fall back to compactorOptions
+            if (
+              typeof this.opts?.strictAtomicity === "boolean"
+                ? this.opts.strictAtomicity
+                : this.opts?.compactorOptions &&
+                  (this.opts.compactorOptions as any).strictAtomicity
+            )
+              wOptsRebuild.strictAtomicity = true;
+            const w = new SSTWriter(tmp, final, wOptsRebuild);
             // track last included WAL end offset
             let lastWalEnd: number | undefined = undefined;
             // conservative minOffset for scanning: replay from start (0)
@@ -823,7 +841,15 @@ export class Engine {
     const snap = this.mem.snapshot();
     const tmp = `${this.dir}/sst_${Date.now()}.tmp`;
     const final = `${this.dir}/sst_${Date.now()}.sst`;
-    const w = new SSTWriter(tmp, final);
+    const wOpts: any = {};
+    if (
+      typeof this.opts?.strictAtomicity === "boolean"
+        ? this.opts.strictAtomicity
+        : this.opts?.compactorOptions &&
+          (this.opts.compactorOptions as any).strictAtomicity
+    )
+      wOpts.strictAtomicity = true;
+    const w = new SSTWriter(tmp, final, wOpts);
     for await (const e of snap.iterator()) {
       const entryCreated =
         typeof this.opts?.timeProvider === "function"
@@ -854,14 +880,27 @@ export class Engine {
     // After successful SST write and manifest persist, record WAL offset and truncate WAL up to that offset
     try {
       if (typeof walOffset === "number") {
+        // Ensure WAL entries up to walOffset are durably persisted before
+        // updating the manifest to point at that offset. For implementations
+        // like HandoffWal append() may return before durability; flush()
+        // forces background writer to drain and fdatasync.
+        if (typeof (this.wal as any).flush === "function") {
+          try {
+            await (this.wal as any).flush();
+          } catch (e) {
+            // best-effort: if flush fails, continue cautiously (we'll still set manifest)
+          }
+        }
         this.manifest.setWalOffset(walOffset);
         // truncate WAL up to this offset - WAL entries up to this pos are now also in SST
         if ((this.wal as any).truncateUpTo) {
-          await (this.wal as any).truncateUpTo(walOffset);
+          try {
+            await (this.wal as any).truncateUpTo(walOffset);
+          } catch (e) {}
         }
       }
     } catch (e) {
-      // best-effort: if truncation fails, we keep WAL as-is to avoid data loss
+      // best-effort: if truncation or manifest update fails, keep WAL as-is to avoid data loss
     }
   }
 
