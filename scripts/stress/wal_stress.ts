@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Wal } from "../../libs/wal/wall";
+import { HandoffWal } from "../../libs/wal/handoff_wal";
 import { writeFileSync, appendFileSync } from "node:fs";
 
 function usage() {
@@ -36,11 +37,17 @@ const payloadSize = Number(getArg("--payloadSize", "256"));
 const batchingArg = getArg("--batching", "true")!;
 const batching = batchingArg !== "false";
 const metricsOut = getArg("--metricsOut");
+const mode = getArg("--mode", "promise")!; // promise | handoff
 
-console.log(`Starting WAL stress test: dir=${dir} file=${file} duration=${duration}s concurrency=${concurrency} payload=${payloadSize} bytes batching=${batching}`);
+console.log(
+  `Starting WAL stress test: dir=${dir} file=${file} duration=${duration}s concurrency=${concurrency} payload=${payloadSize} bytes batching=${batching}`
+);
 
 (async () => {
-  const wal = new Wal(file, { batching, backgroundFlush: true });
+  const wal =
+    mode === "handoff"
+      ? (new HandoffWal(file, { backgroundFlush: true }) as any)
+      : new Wal(file, { batching, backgroundFlush: true });
   // allow overriding the rootDir (Wal keeps it private) by casting
   (wal as any).rootDir = dir;
   await wal.open();
@@ -51,7 +58,13 @@ console.log(`Starting WAL stress test: dir=${dir} file=${file} duration=${durati
   // simple random payload generator
   function makePayload(n: number) {
     // generate a compact object to benefit msgpack
-    return { t: Date.now(), r: Math.random().toString(36).slice(2), d: Buffer.from(Array.from({ length: n }, () => Math.floor(Math.random() * 256))).toString('base64') };
+    return {
+      t: Date.now(),
+      r: Math.random().toString(36).slice(2),
+      d: Buffer.from(
+        Array.from({ length: n }, () => Math.floor(Math.random() * 256))
+      ).toString("base64"),
+    };
   }
 
   // per-worker append loop
@@ -59,12 +72,18 @@ console.log(`Starting WAL stress test: dir=${dir} file=${file} duration=${durati
   const counters = new Array(concurrency).fill(0);
 
   for (let i = 0; i < concurrency; i++) {
-    workers.push((async (idx) => {
-      while (!stop && Date.now() < endTime) {
-        const seq = counters[idx]++;
-        await wal.append({ worker: idx, seq, payload: makePayload(payloadSize) });
-      }
-    })(i));
+    workers.push(
+      (async (idx) => {
+        while (!stop && Date.now() < endTime) {
+          const seq = counters[idx]++;
+          await wal.append({
+            worker: idx,
+            seq,
+            payload: makePayload(payloadSize),
+          });
+        }
+      })(i)
+    );
   }
 
   // metrics sampling
@@ -76,43 +95,78 @@ console.log(`Starting WAL stress test: dir=${dir} file=${file} duration=${durati
     const now = Date.now();
     const deltaEntries = cur.entriesAppended - last.entriesAppended;
     const deltaBytes = cur.bytesAppended - last.bytesAppended;
-    const sample = { ts: now, entriesAppended: cur.entriesAppended, bytesAppended: cur.bytesAppended, deltaEntries, deltaBytes };
+    const sample = {
+      ts: now,
+      entriesAppended: cur.entriesAppended,
+      bytesAppended: cur.bytesAppended,
+      deltaEntries,
+      deltaBytes,
+    };
     samples.push(sample);
-    last = { entriesAppended: cur.entriesAppended, bytesAppended: cur.bytesAppended };
-    process.stdout.write(`\rentries=${cur.entriesAppended} bytes=${cur.bytesAppended} rps=${deltaEntries} bps=${deltaBytes}`);
+    last = {
+      entriesAppended: cur.entriesAppended,
+      bytesAppended: cur.bytesAppended,
+    };
+    process.stdout.write(
+      `\rentries=${cur.entriesAppended} bytes=${cur.bytesAppended} rps=${deltaEntries} bps=${deltaBytes}`
+    );
   }, sampleInterval);
 
   // stop after duration
-  const stopPromise = new Promise<void>(res => {
-    setTimeout(() => { stop = true; res(); }, duration * 1000);
+  const stopPromise = new Promise<void>((res) => {
+    setTimeout(() => {
+      stop = true;
+      res();
+    }, duration * 1000);
   });
 
   // handle SIGINT gracefully
-  process.on('SIGINT', () => { console.log('\nInterrupted, stopping...'); stop = true; });
+  process.on("SIGINT", () => {
+    console.log("\nInterrupted, stopping...");
+    stop = true;
+  });
 
   await stopPromise;
   // wait for workers to drain
-  await Promise.all(workers.map(p => p.catch(() => {})));
+  await Promise.all(workers.map((p) => p.catch(() => {})));
+  console.log("All workers stopped.");
 
   clearInterval(timer);
+  console.log("Stopping timers...");
   // final flush
   await wal.flush();
+  console.log("Final flush done.");
   await wal.close();
+  console.log("WAL closed.");
 
-  console.log('\nTest finished. Final metrics:', wal.metrics);
+  console.log("\nTest finished. Final metrics:", wal.metrics);
 
   if (metricsOut) {
     try {
-      writeFileSync(metricsOut, JSON.stringify({ config: { dir, file, duration, concurrency, payloadSize, batching }, metrics: samples }, null, 2));
-      console.log('Wrote metrics to', metricsOut);
+      writeFileSync(
+        metricsOut,
+        JSON.stringify(
+          {
+            config: { dir, file, duration, concurrency, payloadSize, batching },
+            metrics: samples,
+          },
+          null,
+          2
+        )
+      );
+      console.log("Wrote metrics to", metricsOut);
     } catch (e) {
-      console.error('Failed to write metrics:', e);
+      console.error("Failed to write metrics:", e);
     }
   } else {
     // print summary CSV-like
-    console.log('\nTimestamp,entries,bytes,deltaEntries,deltaBytes');
+    console.log("\nTimestamp,entries,bytes,deltaEntries,deltaBytes");
     for (const s of samples) {
-      console.log(`${new Date(s.ts).toISOString()},${s.entriesAppended},${s.bytesAppended},${s.deltaEntries},${s.deltaBytes}`);
+      console.log(
+        `${new Date(s.ts).toISOString()},${s.entriesAppended},${
+          s.bytesAppended
+        },${s.deltaEntries},${s.deltaBytes}`
+      );
     }
   }
 })();
