@@ -10,21 +10,22 @@
     "test": "node ./scripts/clean_data.cjs && bun test",
     "bench": "node ./scripts/clean_data.cjs && bun run ./bench/compaction_bench.ts",
     "ci": "node ./scripts/clean_data.cjs && bun test",
-
     "help": "bun run ./apps/cli/cli.ts help",
     "cli": "bun run ./apps/cli/cli.ts",
     "shell": "bun run ./apps/cli/cli.ts shell",
-
     "smoke": "node ./scripts/clean_data.cjs && bun run ./apps/cli/cli.ts put ./data/smoke.key smoke.value && bun run ./apps/cli/cli.ts get ./data/smoke.key",
-
     "clean": "node ./scripts/clean_data.cjs",
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:mitata": "bun run bench/kv_bench.ts",
+    "bench:mitata:record": "node ./scripts/run_and_record_bench.cjs",
+    "bench:kv": "bun run bench/kv_bench.ts"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.9.0",
     "@types/bun": "latest",
-    "@types/snappyjs": "^0.7.1"
+    "@types/snappyjs": "^0.7.1",
+    "mitata": "^1.0.34"
   },
   "repository": {
     "type": "git",
@@ -36,8 +37,25 @@
   },
   "license": "MIT",
   "author": "fajarnugraha37",
-  "keywords": ["kv","kvstore","wal","sst","storage","typescript"],
-  "files": ["dist","src","lib","apps","wal","storage","manifest","compact","README.md"],
+  "keywords": [
+    "kv",
+    "kvstore",
+    "wal",
+    "sst",
+    "storage",
+    "typescript"
+  ],
+  "files": [
+    "dist",
+    "src",
+    "lib",
+    "apps",
+    "wal",
+    "storage",
+    "manifest",
+    "compact",
+    "README.md"
+  ],
   "engines": {
     "node": ">=18"
   },

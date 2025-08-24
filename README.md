@@ -383,11 +383,6 @@ Medium-term (1-3 months)
 - Write unit + integration tests for transactional conflict resolution and compaction edge cases.
 - Add benchmark harnesses and CI perf regression checks.
 
-Long-term (3-12 months)
-- Add optional replication/consensus layer (Raft) for multi-node durability (experimental).
-- Replace the demo inverted index with pluggable index backends (SQLite FTS, Lucene/elastic integration).
-- Optimize datafile layout and compaction heuristics for production workloads.
-
 ---
 
 ## How you can help / contribute
@@ -395,3 +390,56 @@ Long-term (3-12 months)
 - Open issues for bugs or feature requests and assign a small scope to each change.
 - Send PRs with tests for bug fixes and new features; run `npm test` and `npm run typecheck` locally.
 - Help build the examples and CI workflow.
+
+---
+
+## Benchmark: 1M write / 1M read
+
+This repository includes a heavy benchmark that writes one million (1,000,000) entries and then performs two read modes over the same dataset: point-reads (one-by-one via `get`) and range scan (prefix scan). The bench is intentionally heavy to exercise WAL, memtable, SST flushing and compaction code paths and to produce realistic IO/CPU/memory characteristics.
+
+### Files and scripts
+
+- `bench/kv_bench.ts` — the heavy benchmark script. It performs:
+	- write 1,000,000 entries with a 256B payload (keys are `k_0000000`..`k_0999999`), batched in groups of 1,000 writes.
+	- read 1,000,000 entries by issuing batched `get()` calls.
+	- read 1,000,000 entries by streaming a prefix scan (`scanStream({ startWith: 'k_' })`).
+	- prints memory stats between phases.
+- `scripts/run_and_record_bench.cjs` — cross-platform runner that executes the bench and saves the raw mitata/bench output to `tmp/mitata_last.txt` (and appends run-level CPU/duration metadata).
+- `scripts/append_bench_readme.ts` — parses the captured output and appends a Markdown table under the `## Benchmarks` section in `README.md` containing per-bench avg latency, memory and captured CPU percent.
+
+### How to run
+
+- Run the cross-platform recorder (recommended on Windows/macOS/Linux):
+
+	```powershell
+	bun run bench:mitata:record
+	```
+
+	This will:
+	- execute `bench/kv_bench.ts`, writing and reading 1M entries (may take several minutes depending on hardware),
+	- produce `tmp/mitata_last.txt` containing raw bench output,
+	- append a Markdown table summary to the `## Benchmarks` section in this `README.md`.
+
+Notes and resource expectations
+- Disk usage: the bench writes ~256 bytes per value × 1,000,000 ≈ 256MB for raw values, plus WAL/metadata/overhead and SST files — plan for ~1GB peak depending on compression and compaction behavior.
+- Memory: depends on memtable and SStable readers; monitor RSS while running. The runner records a simple memory snapshot (RSS / heapUsed) printed between phases and the append script will parse average memory where available.
+- Duration: on modern laptops this may take minutes; on slower machines it may take longer. The runner records run duration and an approximate CPU busy percentage.
+
+### Interpreting README entries
+
+- After a run, the `## Benchmarks` section will contain a Markdown table with columns: `name | avg_ms | avg_mem_mb | cpu_percent | ts`.
+	- `name` — bench name (e.g. `put-small`, `get-small`, `scan-prefix-stream`).
+	- `avg_ms` — average milliseconds per iteration reported by mitata.
+	- `avg_mem_mb` — parsed average memory (where available) reported in mitata output.
+	- `cpu_percent` — approximate CPU busy percentage measured during the run.
+	- `ts` — ISO timestamp when the bench was recorded.
+
+### Safety and cleanup
+- The benchmark will create and (by default) overwrite `./data/bench_kv`. If you have important data in that directory, move it before running the benchmark.
+- To clean generated data after the run:
+
+	```powershell
+	rm -r ./data/bench_kv tmp
+
+### Reports
+
